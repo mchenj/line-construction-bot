@@ -116,6 +116,9 @@ def parse_equipment(text: str) -> list:
     unit_pat = r'(คัน|เครื่อง|ตัว|แห่ง|ชุด)'
     for kw in EQUIPMENT_KEYWORDS:
         if kw in text and kw not in seen:
+            if any(kw in s for s in seen):  # kw เป็น substring ของที่บันทึกแล้ว เช่น แบ็คโฮ ⊂ รถแบ็คโฮ
+                seen.add(kw)
+                continue
             seen.add(kw)
             m = re.search(rf'{re.escape(kw)}\s*(\d+)\s*{unit_pat}', text)
             equip.append({"name":kw, "qty": int(m.group(1)) if m else 1, "unit": m.group(2) if m else "คัน"})
@@ -130,16 +133,40 @@ def parse_construction_report(text: str) -> dict:
         "labor": parse_labor(text),
         "equipment": parse_equipment(text),
     }
-    seen = set()
-    for kw, act_type in ACTIVITY_KEYWORDS.items():
-        if kw in text and kw not in seen:
-            seen.add(kw)
-            result["activities"].append({"keyword":kw,"type":act_type,"description":kw})
-    if not result["activities"]:
-        clean = re.sub(r'\d{1,2}\s*(?:'+
-            '|'.join(re.escape(k) for k in THAI_MONTHS)+r')\s*\d{2,4}','',text).strip()
-        if clean:
-            result["activities"].append({"keyword":"งานทั่วไป","type":"general","description":clean[:200]})
+    # ลอง parse รายการเลขกำกับ (1. ... 2. ... 3. ...) ก่อน
+    numbered_items = []
+    for line in text.split('\n'):
+        stripped = line.strip()
+        m2 = re.match(r'^(\d+)[.)]\s*(.+)', stripped)
+        if m2:
+            numbered_items.append(m2.group(2).strip())
+
+    if numbered_items:
+        for item in numbered_items:
+            act_type = "general"
+            for kw, t in ACTIVITY_KEYWORDS.items():
+                if kw.lower() in item.lower():
+                    act_type = t
+                    break
+            result["activities"].append({"keyword": item, "type": act_type, "description": item})
+    else:
+        seen_kw, seen_desc = set(), set()
+        for kw, act_type in ACTIVITY_KEYWORDS.items():
+            if kw in text and kw not in seen_kw:
+                seen_kw.add(kw)
+                desc = kw
+                for line in text.split('\n'):
+                    if kw in line:
+                        desc = line.strip()
+                        break
+                if desc not in seen_desc:
+                    seen_desc.add(desc)
+                    result["activities"].append({"keyword": kw, "type": act_type, "description": desc})
+        if not result["activities"]:
+            clean = re.sub(r'\d{1,2}\s*(?:'+
+                '|'.join(re.escape(k) for k in THAI_MONTHS)+r')\s*\d{2,4}','',text).strip()
+            if clean:
+                result["activities"].append({"keyword":"งานทั่วไป","type":"general","description":clean[:200]})
     for kw, label in {"ฝนตก":"ฝนตก","ฝน":"มีฝน","แดดจ้า":"แดดจ้า","แดด":"แดด",
                       "เมฆมาก":"เมฆมาก","เมฆ":"มีเมฆ","แจ่มใส":"แจ่มใส",
                       "ร้อน":"อากาศร้อน","หมอก":"มีหมอก"}.items():
