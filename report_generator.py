@@ -3,7 +3,7 @@ report_generator.py v2
 เพิ่ม: ตารางกำลังพล (วิศวกร/หัวหน้า/ช่าง/กรรมกร) และตารางเครื่องจักร
 """
 
-import io, json, httpx
+import io, json, re, httpx
 from datetime import datetime, date, timedelta
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor, Cm
@@ -13,6 +13,32 @@ from docx.oxml import OxmlElement
 
 THAI_MONTHS_FULL = ["","มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
                     "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+
+_MONTHS_PAT = "|".join(THAI_MONTHS_FULL[1:])
+
+def clean_caption(text: str) -> str:
+    """ตัดบรรทัดวันที่ กำลังพล และเครื่องจักรออกจาก caption ใต้ภาพ"""
+    if not text:
+        return ""
+    lines = []
+    for line in text.split('\n'):
+        s = line.strip()
+        if not s:
+            continue
+        # ตัดบรรทัดวันที่ เช่น "วันที่ 22 เมษายน 2569 อากาศแจ่มใส"
+        if re.search(rf'(?:วันที่).*(?:{_MONTHS_PAT}).*\d{{4}}', s):
+            continue
+        # ตัดบรรทัดกำลังพล เช่น "วิศวกร 2 คน หัวหน้าคนงาน 3 คน รวม 7 คน"
+        if re.search(r'(?:วิศวกร|หัวหน้าคนงาน|หัวหน้า|กรรมกร|ช่างฝีมือ|ช่าง|คนงาน)\s*\d+\s*คน', s):
+            continue
+        # ตัดบรรทัดเครื่องจักร เช่น "รถแบ็คโฮ 1 คัน"
+        if re.search(r'(?:รถแบ็คโฮ|แบ็คโฮ|รถขุด|รถบรรทุก|รถเครน|รถบด|รถน้ำ|รถเกรด|รถสูบน้ำ|รถแทร็กเตอร์)\s*\d+\s*คัน', s):
+            continue
+        lines.append(s)
+    result = "\n".join(lines)
+    # แก้ "วันที่ วันที่" ซ้ำ กรณีที่หลุดผ่านมา
+    result = re.sub(r'วันที่\s+วันที่', 'วันที่', result)
+    return result
 
 def thai_date(d):
     if isinstance(d, str): d = date.fromisoformat(d)
@@ -208,7 +234,7 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
         doc.add_heading("5. รูปภาพประกอบ", level=2)
         for img_info in images:
             url     = img_info.get("url") or img_info.get("image_url")
-            caption = img_info.get("caption") or ""
+            caption = clean_caption(img_info.get("caption") or "")
             if not url: continue
             img_bytes = await download_image_bytes(url)
             if img_bytes:
@@ -311,7 +337,7 @@ async def generate_weekly(week_start: str, daily_list: list, project_name: str =
         if images:
             for img_info in images:
                 url     = img_info.get("url") or img_info.get("image_url")
-                caption = img_info.get("caption") or ""
+                caption = clean_caption(img_info.get("caption") or "")
                 if not url: continue
                 img_bytes = await download_image_bytes(url)
                 if img_bytes:
@@ -401,7 +427,7 @@ async def generate_monthly(month_str: str, daily_list: list, project_name: str =
         dr.font.color.rgb = RGBColor(0x1F,0x4E,0x79)
         for img_info in images:
             url     = img_info.get("url") or img_info.get("image_url")
-            caption = img_info.get("caption") or ""
+            caption = clean_caption(img_info.get("caption") or "")
             if not url: continue
             img_bytes = await download_image_bytes(url)
             if img_bytes:
