@@ -14,7 +14,7 @@ LINE_CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 SUPABASE_URL              = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY              = os.environ.get("SUPABASE_KEY", "")
-PROJECT_NAME              = os.environ.get("PROJECT_NAME", "โครงการก่อสร้าง")
+PROJECT_NAME              = os.environ.get("PROJECT_NAME", "โครงการพัฒนาพื้นที่ชุมชนหัวรอและพื้นที่ต่อเนื่อง ตำบลหัวรอ อำเภอเมืองพิษณุโลก จังหวัดพิษณุโลก")
 
 supabase: Client | None = None
 if SUPABASE_URL and SUPABASE_KEY:

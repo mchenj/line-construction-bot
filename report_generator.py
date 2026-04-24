@@ -444,7 +444,7 @@ async def generate_monthly(month_str: str, daily_list: list, project_name: str =
             _wd = day_data.get("work_date", "")
             caption = f"วันที่ {thai_date(_wd)}" if _wd else ""
             if acts_text:
-                caption += f"\n\n{acts_text}" if caption else acts_text
+                caption += f"\n{acts_text}" if caption else acts_text
             if not url: continue
             img_bytes = await download_image_bytes(url)
             if img_bytes:
