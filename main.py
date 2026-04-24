@@ -469,6 +469,21 @@ async def handle_command(cmd, reply_token, user_id):
                 f"• รายการงาน: {r.get('report_activities',0)} รายการ\n"
                 f"• ข้อความดิบ: {r.get('line_reports',0)} รายการ"
             ))
+            # Auto-regenerate weekly report สำหรับสัปดาห์ที่มีวันที่ถูกลบ
+            try:
+                d_obj = date.fromisoformat(td)
+                wk = get_current_week_no(d_obj)
+                ws, we = get_week_range(wk, d_obj.year, d_obj.month)
+                dl = get_week_daily_list(str(ws), str(we))
+                if dl:
+                    await reply_to_line(reply_token, f"⏳ กำลังสร้างรายงานสัปดาห์ที่ {wk} ใหม่...")
+                    fb = await generate_weekly(str(ws), dl, PROJECT_NAME, week_no=wk, week_end=str(we))
+                    fn = f"Weekly_Report_{d_obj.year}-{d_obj.month:02d}_W{wk}.docx"
+                    await push_file_to_line(user_id, fn, fb)
+                else:
+                    await reply_to_line(reply_token, f"ℹ️ ไม่มีข้อมูลเหลือในสัปดาห์ที่ {wk} แล้ว")
+            except Exception as e:
+                print(f"❌ auto weekly: {e}")
         else:
             await reply_to_line(reply_token, f"❌ ลบไม่สำเร็จ: {res['msg']}")
         return
