@@ -216,10 +216,17 @@ def thai_date_str(work_date: str) -> str:
 
 def parse_date_arg(arg):
     arg = arg.strip()
+    # รูปแบบ DD/MM เช่น 25/04
     m = re.match(r'^(\d{1,2})/(\d{1,2})$', arg)
     if m:
         t = date.today()
         return f"{t.year}-{m.group(2).zfill(2)}-{m.group(1).zfill(2)}"
+    # รูปแบบวันเดียว เช่น "25" → วันที่ 25 เดือนปัจจุบัน
+    m2 = re.match(r'^(\d{1,2})$', arg)
+    if m2:
+        t = date.today()
+        return f"{t.year}-{t.month:02d}-{int(m2.group(1)):02d}"
+    # รูปแบบ ISO YYYY-MM-DD
     return arg if re.match(r'^\d{4}-\d{2}-\d{2}$', arg) else None
 
 
@@ -274,21 +281,27 @@ def delete_daily_data(work_date: str) -> dict:
     if not supabase:
         return {"ok": False, "msg": "ไม่ได้เชื่อมต่อ Supabase"}
     results = {}
-    try:
-        r = supabase.table("daily_reports").delete().eq("work_date", work_date).execute()
-        results["daily_reports"] = len(r.data or [])
-    except Exception as e:
-        print(f"❌ del daily_reports: {e}"); results["daily_reports"] = -1
+    # ลบ child tables ก่อน (FK constraint) แล้วค่อยลบ daily_reports
     try:
         r = supabase.table("report_activities").delete().eq("work_date", work_date).execute()
         results["report_activities"] = len(r.data or [])
     except Exception as e:
         print(f"❌ del report_activities: {e}"); results["report_activities"] = -1
     try:
+        r = supabase.table("report_images").delete().eq("work_date", work_date).execute()
+        results["report_images"] = len(r.data or [])
+    except Exception as e:
+        print(f"❌ del report_images: {e}"); results["report_images"] = -1
+    try:
         r = supabase.table("line_reports").delete().eq("work_date", work_date).execute()
         results["line_reports"] = len(r.data or [])
     except Exception as e:
         print(f"❌ del line_reports: {e}"); results["line_reports"] = -1
+    try:
+        r = supabase.table("daily_reports").delete().eq("work_date", work_date).execute()
+        results["daily_reports"] = len(r.data or [])
+    except Exception as e:
+        print(f"❌ del daily_reports: {e}"); results["daily_reports"] = -1
     return {"ok": True, "results": results}
 
 
