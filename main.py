@@ -95,6 +95,14 @@ def parse_thai_date(text):
     return None
 
 
+def parse_water_level(text: str):
+    """แปลงค่าระดับน้ำ เช่น +97.50, -2.30, ระดับน้ำ +97.50"""
+    m = re.search(r'(?:ระดับน้ำ\s*)?([+-]\d+(?:\.\d+)?)\s*(?:ม\.|เมตร|m)?', text)
+    if m:
+        return float(m.group(1))
+    return None
+
+
 def parse_labor(text: str) -> dict:
     result = {"engineers":0,"foremen":0,"skilled_workers":0,"laborers":0,"total_workers":0}
     for kw, field in LABOR_FIELDS.items():
@@ -132,6 +140,7 @@ def parse_construction_report(text: str) -> dict:
         "weather":None, "raw_text":text,
         "labor": parse_labor(text),
         "equipment": parse_equipment(text),
+        "water_level": parse_water_level(text),
     }
     # ลอง parse รายการเลขกำกับ (1. ... 2. ... 3. ...) ก่อน
     numbered_items = []
@@ -286,6 +295,7 @@ def upsert_daily_report(work_date, parsed):
         labor = parsed.get("labor", {})
         equip = parsed.get("equipment", [])
         ex = supabase.table("daily_reports").select("id,total_workers").eq("work_date",work_date).execute()
+        water_level = parsed.get("water_level")
         if ex.data:
             upd = {"updated_at": datetime.now(timezone.utc).isoformat()}
             if parsed.get("weather"):           upd["weather_morning"]  = parsed["weather"]
@@ -294,6 +304,7 @@ def upsert_daily_report(work_date, parsed):
                     "engineers":labor.get("engineers",0),"foremen":labor.get("foremen",0),
                     "skilled_workers":labor.get("skilled_workers",0),"laborers":labor.get("laborers",0)})
             if equip: upd["equipment"] = json.dumps(equip, ensure_ascii=False)
+            if water_level is not None: upd["water_level"] = water_level
             supabase.table("daily_reports").update(upd).eq("work_date",work_date).execute()
         else:
             supabase.table("daily_reports").insert({
@@ -302,6 +313,7 @@ def upsert_daily_report(work_date, parsed):
                 "engineers":labor.get("engineers",0),"foremen":labor.get("foremen",0),
                 "skilled_workers":labor.get("skilled_workers",0),"laborers":labor.get("laborers",0),
                 "equipment":json.dumps(equip,ensure_ascii=False),"report_status":"draft",
+                "water_level":water_level,
             }).execute()
         return True
     except Exception as e:
@@ -348,7 +360,7 @@ def get_daily_data(work_date):
         r = supabase.table("v_daily_report_full").select("*").eq("work_date",work_date).execute()
         data = r.data[0] if r.data else {"work_date":work_date,"activities":[],"images":[]}
         eq = supabase.table("daily_reports").select(
-            "engineers,foremen,skilled_workers,laborers,equipment").eq("work_date",work_date).execute()
+            "engineers,foremen,skilled_workers,laborers,equipment,water_level").eq("work_date",work_date).execute()
         if eq.data: data.update(eq.data[0])
         return data
     except Exception as e:
@@ -361,7 +373,7 @@ def _enrich_days(days):
     for d in days:
         try:
             eq = supabase.table("daily_reports").select(
-                "engineers,foremen,skilled_workers,laborers,equipment").eq("work_date",d["work_date"]).execute()
+                "engineers,foremen,skilled_workers,laborers,equipment,water_level").eq("work_date",d["work_date"]).execute()
             if eq.data: d.update(eq.data[0])
         except: pass
     return days
@@ -440,11 +452,16 @@ def _help_text():
         "/delete         → ลบข้อมูลวันนี้\n"
         "/delete 22/04   → ลบข้อมูลวันที่ 22 เม.ย.\n"
         "━━━━━━━━━━━━━━━\n"
+        "🌊 บันทึกระดับน้ำ:\n"
+        "+97.50         → ระดับน้ำวันนี้\n"
+        "-2.30          → ระดับน้ำติดลบ\n"
+        "━━━━━━━━━━━━━━━\n"
         "📝 ตัวอย่างการบันทึก:\n"
         "วันที่ 23 เมษายน 2568 อากาศแดด\n"
         "ผู้รับจ้างจัดทำ Shop Drawing\n"
         "วิศวกร 2 คน ช่าง 5 คน กรรมกร 10 คน รวม 17 คน\n"
         "รถแบ็คโฮ 2 คัน รถบรรทุก 3 คัน\n"
+        "ระดับน้ำ +97.50\n"
         "แล้วส่งรูปตาม (ภายใน 10 นาที)"
     )
 
@@ -546,6 +563,25 @@ async def webhook(request: Request):
             if text.startswith("/"):
                 await (reply_to_line(reply_token,_help_text()) if text.lower() in ("/help","/start")
                        else handle_command(text,reply_token,user_id))
+                continue
+
+            # ตรวจสอบว่าเป็นข้อความระดับน้ำแบบ standalone เช่น "+97.50" หรือ "-2.30"
+            if re.match(r'^[+-]\d+(?:\.\d+)?$', text):
+                wl = float(text)
+                last = last_text_by_user.get(user_id)
+                wl_date = (last["work_date"] if last and
+                           (datetime.now(timezone.utc)-last["timestamp"]).total_seconds() < 600
+                           else today_str)
+                if supabase:
+                    try:
+                        supabase.table("daily_reports").update(
+                            {"water_level": wl, "updated_at": datetime.now(timezone.utc).isoformat()}
+                        ).eq("work_date", wl_date).execute()
+                    except Exception as e:
+                        print(f"❌ water_level: {e}")
+                sign = "+" if wl >= 0 else ""
+                await reply_to_line(reply_token,
+                    f"✅ บันทึกระดับน้ำเรียบร้อย\n📅 วันที่: {wl_date}\n🌊 ระดับน้ำ: {sign}{wl:.2f} ม.")
                 continue
 
             parsed    = parse_construction_report(text)

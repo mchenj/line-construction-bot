@@ -201,11 +201,14 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
 
     # 1. ข้อมูลทั่วไป
     doc.add_heading("1. ข้อมูลทั่วไป", level=2)
-    info = doc.add_table(rows=2, cols=4)
+    wl = daily_data.get("water_level")
+    wl_str = (f"+{wl:.2f}" if wl and wl >= 0 else f"{wl:.2f}") + " ม." if wl is not None else "—"
+    info = doc.add_table(rows=2, cols=5)
     info.style = "Table Grid"
-    add_header_row(info, ["วันที่ทำงาน","สภาพอากาศ","จำนวนคนงานรวม","ผู้ควบคุมงาน"])
+    add_header_row(info, ["วันที่ทำงาน","สภาพอากาศ","ระดับน้ำ (ม.)","จำนวนคนงานรวม","ผู้ควบคุมงาน"])
     for i,v in enumerate([thai_date(d),
                            daily_data.get("weather_morning") or "—",
+                           wl_str,
                            str(daily_data.get("total_workers") or "—")+" คน",
                            daily_data.get("supervisor") or "—"]):
         info.rows[1].cells[i].text = v
