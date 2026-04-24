@@ -97,6 +97,21 @@ def add_title_block(doc, title, subtitle, project_name):
     r4.font.color.rgb = RGBColor(0x1F,0x4E,0x79)
     doc.add_paragraph()
 
+def add_image_caption(doc, caption: str):
+    """เพิ่ม caption ใต้ภาพโดยใช้ line break แทน paragraph break เพื่อไม่ให้มีช่องว่าง"""
+    cap_p = doc.add_paragraph()
+    cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cap_p.paragraph_format.space_before = Pt(4)
+    cap_p.paragraph_format.space_after = Pt(6)
+    lines = [l for l in caption.split('\n') if l.strip()]
+    for i, line in enumerate(lines):
+        run = cap_p.add_run(line)
+        run.italic = True
+        run.font.size = Pt(12)
+        if i < len(lines) - 1:
+            run.add_break()
+
+
 async def download_image_bytes(url):
     try:
         async with httpx.AsyncClient(timeout=15) as c:
@@ -237,17 +252,14 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
             acts_text = clean_caption(img_info.get("caption") or "")
             caption = f"วันที่ {thai_date(d)}"
             if acts_text:
-                caption += f"\n\n{acts_text}"
+                caption += f"\n{acts_text}"
             if not url: continue
             img_bytes = await download_image_bytes(url)
             if img_bytes:
                 p = doc.add_paragraph()
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 p.add_run().add_picture(io.BytesIO(img_bytes), width=Inches(5.5))
-            cap_p = doc.add_paragraph(caption)
-            cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            if cap_p.runs:
-                cap_p.runs[0].italic = True; cap_p.runs[0].font.size = Pt(12)
+            add_image_caption(doc, caption)
             doc.add_paragraph()
 
     # ลายเซ็น
@@ -350,19 +362,14 @@ async def generate_weekly(week_start: str, daily_list: list, project_name: str =
                 _wd = day_data.get("work_date", "")
                 caption = f"วันที่ {thai_date(_wd)}" if _wd else ""
                 if acts_text:
-                    caption += f"\n\n{acts_text}" if caption else acts_text
+                    caption += f"\n{acts_text}" if caption else acts_text
                 if not url: continue
                 img_bytes = await download_image_bytes(url)
                 if img_bytes:
                     p = doc.add_paragraph()
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     p.add_run().add_picture(io.BytesIO(img_bytes), width=Inches(5.0))
-                cap_p = doc.add_paragraph(caption)
-                cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                if cap_p.runs:
-                    cap_p.runs[0].italic = True; cap_p.runs[0].font.size = Pt(12)
-                else:
-                    r2 = cap_p.add_run(caption); r2.italic = True; r2.font.size = Pt(12)
+                add_image_caption(doc, caption)
         elif acts:
             for act in acts:
                 bp = doc.add_paragraph(act.get("desc") or act.get("description",""), style="List Bullet")
@@ -451,12 +458,7 @@ async def generate_monthly(month_str: str, daily_list: list, project_name: str =
                 p = doc.add_paragraph()
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 p.add_run().add_picture(io.BytesIO(img_bytes), width=Inches(4.5))
-            cap_p = doc.add_paragraph(caption)
-            cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            if cap_p.runs:
-                cap_p.runs[0].italic = True; cap_p.runs[0].font.size = Pt(11)
-            else:
-                r2 = cap_p.add_run(caption); r2.italic = True; r2.font.size = Pt(11)
+            add_image_caption(doc, caption)
         doc.add_paragraph()
 
     doc.add_heading("ลงชื่อ / Signature", level=2)
