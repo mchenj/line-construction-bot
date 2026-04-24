@@ -357,14 +357,58 @@ def upload_image(img_bytes, filename):
 def get_daily_data(work_date):
     if not supabase: return {"work_date":work_date,"activities":[],"images":[]}
     try:
-        r = supabase.table("v_daily_report_full").select("*").eq("work_date",work_date).execute()
-        data = r.data[0] if r.data else {"work_date":work_date,"activities":[],"images":[]}
+        # ดึงข้อมูลหลักจาก daily_reports โดยตรง (ไม่พึ่ง view)
         eq = supabase.table("daily_reports").select(
-            "engineers,foremen,skilled_workers,laborers,equipment,water_level").eq("work_date",work_date).execute()
-        if eq.data: data.update(eq.data[0])
+            "engineers,foremen,skilled_workers,laborers,equipment,water_level,total_workers,weather_morning"
+        ).eq("work_date", work_date).execute()
+        data = {"work_date": work_date, "activities": [], "images": []}
+        if eq.data:
+            data.update(eq.data[0])
+
+        # ดึง activities จาก report_activities
+        acts = supabase.table("report_activities").select(
+            "description,seq_no,activity_type"
+        ).eq("work_date", work_date).order("seq_no").execute()
+        if acts.data:
+            data["activities"] = [
+                {"desc": a.get("description", ""), "seq": a.get("seq_no", i+1)}
+                for i, a in enumerate(acts.data)
+            ]
+
+        # ดึง images จาก report_images
+        imgs = supabase.table("report_images").select(
+            "image_url,caption"
+        ).eq("work_date", work_date).execute()
+        if imgs.data:
+            data["images"] = [
+                {"url": img.get("image_url"), "caption": img.get("caption", "")}
+                for img in imgs.data
+            ]
+
         return data
     except Exception as e:
         print(f"❌ get_daily: {e}"); return {"work_date":work_date,"activities":[],"images":[]}
+
+
+def get_last_text_context(user_id: str) -> dict | None:
+    """ดึง context ข้อความล่าสุดของ user จาก Supabase (fallback เมื่อ server restart)"""
+    if not supabase:
+        return None
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        r = (supabase.table("line_reports")
+             .select("work_date,raw_text")
+             .eq("user_id", user_id)
+             .eq("message_type", "text")
+             .gte("timestamp", cutoff)
+             .order("timestamp", desc=True)
+             .limit(1)
+             .execute())
+        if r.data:
+            return {"work_date": r.data[0]["work_date"], "text": r.data[0]["raw_text"]}
+    except Exception as e:
+        print(f"❌ get_last_context: {e}")
+    return None
 
 
 def _enrich_days(days):
@@ -521,7 +565,22 @@ async def handle_command(cmd, reply_token, user_id):
     try:
         if command == "/daily":
             td = parse_date_arg(arg) if arg else str(date.today())
-            fb = await generate_daily(td, get_daily_data(td), PROJECT_NAME)
+            if not td:
+                await reply_to_line(reply_token, "❌ รูปแบบวันที่ไม่ถูกต้อง\nตัวอย่าง: /daily 23/04")
+                return
+            daily_data = get_daily_data(td)
+            has_data = (daily_data.get("activities") or daily_data.get("total_workers")
+                        or daily_data.get("water_level") or daily_data.get("images"))
+            if not has_data:
+                await reply_to_line(reply_token,
+                    f"⚠️ ไม่พบข้อมูลรายงานวันที่ {thai_date_str(td)}\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"กรุณาตรวจสอบ:\n"
+                    f"• ส่งข้อความรายงานก่อนใช้ /daily แล้วหรือยัง?\n"
+                    f"• วันที่ในข้อความถูกต้องหรือไม่?\n"
+                    f"• ลองพิมพ์ /daily (ไม่ใส่วันที่) สำหรับวันนี้")
+                return
+            fb = await generate_daily(td, daily_data, PROJECT_NAME)
             fn = f"Daily_Report_{td}.docx"
         elif command == "/weekly":
             parsed_w = parse_weekly_arg(arg)
@@ -641,10 +700,19 @@ async def webhook(request: Request):
                 img_bytes   = await fetch_line_image(message_id)
                 fn          = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{message_id}.jpg"
                 image_url   = upload_image(img_bytes, fn)
-                last        = last_text_by_user.get(user_id)
                 caption, work_date = "", today_str
+
+                # ลอง in-memory ก่อน (เร็วที่สุด)
+                last = last_text_by_user.get(user_id)
                 if last and (datetime.now(timezone.utc)-last["timestamp"]).total_seconds() < 600:
-                    caption, work_date = build_image_caption(last["text"]), last["work_date"]
+                    caption    = build_image_caption(last["text"])
+                    work_date  = last["work_date"]
+                else:
+                    # fallback: ดึงจาก Supabase (รับมือ server restart / redeploy)
+                    db_last = get_last_text_context(user_id)
+                    if db_last:
+                        caption   = build_image_caption(db_last["text"])
+                        work_date = db_last["work_date"]
                 save_raw_report({"timestamp":ts_tz,"user_id":user_id,"message_type":"image",
                     "raw_text":f"[รูปภาพ: {fn}]","work_date":work_date,
                     "activities":"[]","quantities":"[]","workers":None,"weather":None,
