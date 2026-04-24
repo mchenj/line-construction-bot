@@ -35,6 +35,9 @@ def clean_caption(text: str) -> str:
         # ตัดบรรทัดเครื่องจักร เช่น "รถแบ็คโฮ 1 คัน"
         if re.search(r'(?:รถแบ็คโฮ|แบ็คโฮ|รถขุด|รถบรรทุก|รถเครน|รถบด|รถน้ำ|รถเกรด|รถสูบน้ำ|รถแทร็กเตอร์)\s*\d+\s*คัน', s):
             continue
+        # ตัดบรรทัดระดับน้ำ เช่น "+92.50" หรือ "+92.50 ม."
+        if re.match(r'^[+-]\d+(?:\.\d+)?\s*(?:ม\.|เมตร|m)?$', s):
+            continue
         lines.append(s)
     result = "\n".join(lines)
     # แก้ "วันที่ วันที่" ซ้ำ กรณีที่หลุดผ่านมา
@@ -214,9 +217,37 @@ _EQUIP_MAP = {
 }
 
 
+_CONTENT_WIDTH_TWIPS = 9026  # A4 21cm − 2.54cm×2 margins → twips
+
 def _tpl_set_run(para, idx, text):
     if idx < len(para.runs):
         para.runs[idx].text = text
+
+
+def _tpl_set_activity_line(para, text_run_idx, text, keep_tab_run_idx):
+    """ใส่ข้อความ activity + เพิ่ม right-aligned tab ให้เส้นประลากถึงขอบขวา"""
+    # ใส่ข้อความ
+    if text_run_idx < len(para.runs):
+        para.runs[text_run_idx].text = text
+    # ล้าง runs อื่น ๆ ที่ไม่ใช่ tab ที่จะเก็บไว้
+    for i, run in enumerate(para.runs):
+        if i != text_run_idx and i != keep_tab_run_idx:
+            if i > text_run_idx:   # ล้างเฉพาะ runs หลังข้อความ
+                run.text = ""
+    # ตรวจให้ tab run มีข้อมูลถูกต้อง
+    if keep_tab_run_idx < len(para.runs):
+        para.runs[keep_tab_run_idx].text = "\t"
+
+    # เพิ่ม right-aligned tab stop ที่ขอบขวาของ content
+    pPr = para._p.get_or_add_pPr()
+    for tabs in pPr.findall(qn("w:tabs")):
+        pPr.remove(tabs)
+    tabs_el = OxmlElement("w:tabs")
+    tab_el  = OxmlElement("w:tab")
+    tab_el.set(qn("w:val"), "right")
+    tab_el.set(qn("w:pos"), str(_CONTENT_WIDTH_TWIPS))
+    tabs_el.append(tab_el)
+    pPr.append(tabs_el)
 
 
 def _tpl_rebuild_para(para, new_text):
@@ -291,14 +322,16 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
     activities = daily_data.get("activities") or []
 
     act1 = activities[0].get("desc") or activities[0].get("description") if activities else ""
-    _tpl_set_run(paras[12], 3, f"1. {act1}" if act1 else "1. —")
-    _tpl_set_run(paras[12], 4, "")
-    _tpl_set_run(paras[12], 5, "")
+    # para[12]: run[3]=ข้อความ, run[6]=tab สุดท้าย → เส้นประถึงขอบขวา
+    _tpl_set_activity_line(paras[12], text_run_idx=3,
+                           text=f"1. {act1}" if act1 else "1. —",
+                           keep_tab_run_idx=6)
 
     act2 = (activities[1].get("desc") or activities[1].get("description") or "") if len(activities) > 1 else ""
-    _tpl_set_run(paras[13], 2, f"2. {act2}" if act2 else "")
-    for i in range(3, len(paras[13].runs)):
-        paras[13].runs[i].text = ""
+    # para[13]: run[2]=ข้อความ, run[3]=tab สุดท้าย → เส้นประถึงขอบขวา
+    _tpl_set_activity_line(paras[13], text_run_idx=2,
+                           text=f"2. {act2}" if act2 else "",
+                           keep_tab_run_idx=3)
 
     # กรณีมีงานมากกว่า 2 รายการ — แทรก paragraph ใหม่หลัง para[13]
     ref_elem = paras[13]._element

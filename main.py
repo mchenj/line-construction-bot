@@ -186,7 +186,7 @@ def parse_construction_report(text: str) -> dict:
 
 
 def build_image_caption(text: str) -> str:
-    """ตัดบรรทัดกำลังพลและเครื่องจักรออก เหลือแค่วันที่และรายการงาน"""
+    """ตัดบรรทัดกำลังพล เครื่องจักร และระดับน้ำออก เหลือแค่วันที่และรายการงาน"""
     lines = []
     for line in text.split('\n'):
         stripped = line.strip()
@@ -195,6 +195,9 @@ def build_image_caption(text: str) -> str:
         if any(kw in stripped for kw in LABOR_FIELDS):
             continue
         if any(kw in stripped for kw in EQUIPMENT_KEYWORDS):
+            continue
+        # ตัดบรรทัดระดับน้ำ เช่น "+92.50" หรือ "+92.50 ม."
+        if re.match(r'^[+-]\d+(?:\.\d+)?\s*(?:ม\.|เมตร|m)?$', stripped):
             continue
         lines.append(stripped)
     return '\n'.join(lines)
