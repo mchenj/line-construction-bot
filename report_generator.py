@@ -111,7 +111,8 @@ def add_image_caption(doc, caption: str):
     for i, line in enumerate(lines):
         run = cap_p.add_run(line)
         run.italic = True
-        run.font.size = Pt(12)
+        run.font.name = "TH SarabunIT๙"
+        run.font.size = Pt(16)
         if i < len(lines) - 1:
             run.add_break()
 
