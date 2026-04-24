@@ -1,9 +1,10 @@
 """
-report_generator.py v2
-เพิ่ม: ตารางกำลังพล (วิศวกร/หัวหน้า/ช่าง/กรรมกร) และตารางเครื่องจักร
+report_generator.py v3
+รายงานประจำวัน: เติมข้อมูลลงใน template_daily.docx แทนสร้างใหม่
 """
 
-import io, json, re, httpx
+import io, json, re, os, httpx
+from copy import deepcopy
 from datetime import datetime, date, timedelta
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor, Cm
@@ -189,74 +190,162 @@ def add_signature_table(doc, left="ผู้รายงาน (Reported by)", r
 
 
 # ════════════════════════════════════════
+# TEMPLATE HELPERS (DAILY REPORT)
+# ════════════════════════════════════════
+
+TEMPLATE_DAILY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template_daily.docx")
+
+# โครงสร้าง paragraph ใน template_daily.docx:
+#  [1]  วันที่ {day} เดือน {month} พ.ศ.{year}   → run[2]=day, run[6]=month+year
+#  [11] ค่าระดับน้ำขึ้นสูงสุด {+xx.xx ม.}        → run[2]=water level
+#  [12] งานที่ทำ  1. {activity1}                → run[3]=text
+#  [13] \t\t2. {activity2}                      → run[2]=text
+#  [20] วิศวกร/ช่าง {x} ... หัวหน้าคนงาน {x} กรรมกร {x} รวม {x}
+#       → run[2]=eng, run[7]=foremen, run[11]=laborers(padded), run[15]=total
+#  [22-27] ตารางเครื่องจักร  → regex replace qty
+
+_EQUIP_MAP = {
+    22: ["รถเฮี้ยบ", "รถเทเลอร์", "รถสกัดคอนกรีต", "รถเกรด"],
+    23: ["รถแบ็คโฮ", "รถบด", "รถน้ำ", "รถบรรทุก", "รถแทร็กเตอร์"],
+    24: ["รถเครน", "รถบดล้อยาง", "ปั่นจั่น", "รถสกัดคอนกรีตเสาเข็ม"],
+    25: ["รถบรรทุก 10 ล้อ", "รถบรรทุก 6 ล้อ", "กล้องสำรวจแนว", "กล้องระดับ"],
+    26: ["เครื่องจี้คอนกรีต", "เครื่องเชื่อม", "เครื่องตบดิน", "เครื่องสูบน้ำ"],
+    27: ["รถบดสั่นสะเทือน", "รถน้ำ", "รถPRIME COAT", "รถPAVE ยาง"],
+}
+
+
+def _tpl_set_run(para, idx, text):
+    if idx < len(para.runs):
+        para.runs[idx].text = text
+
+
+def _tpl_rebuild_para(para, new_text):
+    """ล้าง runs ทั้งหมด ใส่ new_text ใน run แรก"""
+    for i, run in enumerate(para.runs):
+        run.text = new_text if i == 0 else ""
+
+
+def _tpl_delete_para(para):
+    p = para._element
+    p.getparent().remove(p)
+
+
+def _tpl_insert_activity(ref_elem, num, act_text):
+    """แทรก paragraph ของ activity ถัดจาก ref_elem, คืนค่า element ใหม่"""
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    new_p = deepcopy(ref_elem)
+    ref_elem.addnext(new_p)
+    for i, t in enumerate(new_p.findall(f".//{{{ns}}}t")):
+        if i == 0:
+            t.text = f"\t\t{num}. {act_text}"
+            t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        else:
+            t.text = ""
+    return new_p
+
+
+def _tpl_fill_equipment(paras, daily_data):
+    equip_raw = daily_data.get("equipment")
+    if isinstance(equip_raw, str):
+        try: equipment = json.loads(equip_raw)
+        except: equipment = []
+    else:
+        equipment = equip_raw or []
+
+    lookup = {eq.get("name", "").strip(): eq.get("qty", 1) for eq in equipment}
+
+    for pidx, names in _EQUIP_MAP.items():
+        para = paras[pidx]
+        text = para.text
+        for name in names:
+            qty = lookup.get(name)
+            pattern = re.escape(name) + r"[…\.\d]+(?:คัน|ตัว|เครื่อง)"
+
+            def _repl(m, n=name, q=qty):
+                unit = re.search(r"(?:คัน|ตัว|เครื่อง)$", m.group()).group()
+                return f"{n}…{q}….{unit}" if q else f"{n}………{unit}"
+
+            text = re.sub(pattern, _repl, text)
+        _tpl_rebuild_para(para, text)
+
+
+# ════════════════════════════════════════
 # DAILY REPORT
 # ════════════════════════════════════════
 
 async def generate_daily(work_date: str, daily_data: dict, project_name: str = "โครงการก่อสร้าง") -> bytes:
-    doc = Document()
-    style_doc(doc)
+    doc = Document(TEMPLATE_DAILY)
+    paras = doc.paragraphs
     d = date.fromisoformat(work_date)
-    add_title_block(doc, "รายงานประจำวัน (DAILY REPORT)",
-        f"วันที่ {thai_date(d)}  |  ฉบับที่ DR-{d.strftime('%Y%m%d')}", project_name)
 
-    # 1. ข้อมูลทั่วไป
-    doc.add_heading("1. ข้อมูลทั่วไป", level=2)
+    # 1. วันที่
+    _tpl_set_run(paras[1], 2, str(d.day))
+    _tpl_set_run(paras[1], 6, f"{THAI_MONTHS_FULL[d.month]}   พ.ศ.{d.year+543}")
+
+    # 2. ระดับน้ำ
     wl = daily_data.get("water_level")
-    wl_str = (f"+{wl:.2f}" if wl and wl >= 0 else f"{wl:.2f}") + " ม." if wl is not None else "—"
-    info = doc.add_table(rows=2, cols=5)
-    info.style = "Table Grid"
-    add_header_row(info, ["วันที่ทำงาน","สภาพอากาศ","ระดับน้ำ (ม.)","จำนวนคนงานรวม","ผู้ควบคุมงาน"])
-    for i,v in enumerate([thai_date(d),
-                           daily_data.get("weather_morning") or "—",
-                           wl_str,
-                           str(daily_data.get("total_workers") or "—")+" คน",
-                           daily_data.get("supervisor") or "—"]):
-        info.rows[1].cells[i].text = v
-        info.rows[1].cells[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph()
+    wl_str = ((f"+{wl:.2f}" if wl >= 0 else f"{wl:.2f}") + " ม.") if wl is not None else "— ม."
+    _tpl_set_run(paras[11], 2, wl_str)
 
-    # 2. กำลังพล
-    doc.add_heading("2. กำลังพล", level=2)
-    add_labor_table(doc, daily_data)
-    doc.add_paragraph()
-
-    # 3. เครื่องจักร
-    doc.add_heading("3. เครื่องจักรและยานพาหนะ", level=2)
-    add_equipment_table(doc, daily_data)
-    doc.add_paragraph()
-
-    # 4. งานที่ดำเนินการ
-    doc.add_heading("4. งานที่ดำเนินการ", level=2)
+    # 3. งานที่ทำ
     activities = daily_data.get("activities") or []
-    if activities:
-        act_tbl = doc.add_table(rows=len(activities)+1, cols=4)
-        act_tbl.style = "Table Grid"
-        add_header_row(act_tbl, ["ลำดับ","รายการงาน","สถานที่","หมายเหตุ"])
-        for i, act in enumerate(activities):
-            row = act_tbl.rows[i+1]
-            row.cells[0].text = str(act.get("seq") or i+1)
-            row.cells[1].text = act.get("desc") or act.get("description") or "—"
-            row.cells[2].text = act.get("location") or "—"
-            row.cells[3].text = f"{act['qty']:g} {act['unit']}" if act.get("qty") and act.get("unit") else "—"
-            row.cells[0].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-            row.cells[3].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-            if i%2==0:
-                for cell in row.cells: set_cell_bg(cell,"EBF3FB")
-    else:
-        doc.add_paragraph("— ไม่มีข้อมูลกิจกรรม —")
-    doc.add_paragraph()
 
-    # 5. รูปภาพ
+    act1 = activities[0].get("desc") or activities[0].get("description") if activities else ""
+    _tpl_set_run(paras[12], 3, f"1. {act1}" if act1 else "1. —")
+    _tpl_set_run(paras[12], 4, "")
+    _tpl_set_run(paras[12], 5, "")
+
+    act2 = (activities[1].get("desc") or activities[1].get("description") or "") if len(activities) > 1 else ""
+    _tpl_set_run(paras[13], 2, f"2. {act2}" if act2 else "")
+    for i in range(3, len(paras[13].runs)):
+        paras[13].runs[i].text = ""
+
+    # กรณีมีงานมากกว่า 2 รายการ — แทรก paragraph ใหม่หลัง para[13]
+    ref_elem = paras[13]._element
+    for i, act in enumerate(activities[2:], start=3):
+        act_text = act.get("desc") or act.get("description") or ""
+        ref_elem = _tpl_insert_activity(ref_elem, i, act_text)
+
+    # 4. กำลังพล
+    eng = (daily_data.get("engineers") or 0) + (daily_data.get("skilled_workers") or 0)
+    fmn = daily_data.get("foremen") or 0
+    lab = daily_data.get("laborers") or 0
+    total = daily_data.get("total_workers") or (eng + fmn + lab)
+
+    pw = paras[20]
+    _tpl_set_run(pw, 2, str(eng) if eng else "—")
+    _tpl_set_run(pw, 7, str(fmn) if fmn else "—")
+    if 11 < len(pw.runs):
+        pw.runs[11].text = f"      {lab}     " if lab else "      —     "
+    _tpl_set_run(pw, 15, str(total) if total else "—")
+
+    # 5. เครื่องจักร
+    _tpl_fill_equipment(paras, daily_data)
+
+    # 6. รูปภาพ — ลบ placeholder ใน template แล้วใส่รูปจริง
+    heading_para = next((p for p in doc.paragraphs if "รูปภาพประกอบ" in p.text), None)
+    if heading_para:
+        heading_elem = heading_para._element
+        found = False
+        to_delete = []
+        for p in doc.paragraphs:
+            if found:
+                to_delete.append(p)
+            if p._element is heading_elem:
+                found = True
+        for p in to_delete:
+            _tpl_delete_para(p)
+
     images = daily_data.get("images") or []
     if images:
-        doc.add_heading("5. รูปภาพประกอบ", level=2)
         for img_info in images:
-            url     = img_info.get("url") or img_info.get("image_url")
+            url = img_info.get("url") or img_info.get("image_url")
             acts_text = clean_caption(img_info.get("caption") or "")
             caption = f"วันที่ {thai_date(d)}"
             if acts_text:
                 caption += f"\n{acts_text}"
-            if not url: continue
+            if not url:
+                continue
             img_bytes = await download_image_bytes(url)
             if img_bytes:
                 p = doc.add_paragraph()
@@ -265,11 +354,9 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
             add_image_caption(doc, caption)
             doc.add_paragraph()
 
-    # ลายเซ็น
-    doc.add_heading("ลงชื่อ / Signature", level=2)
-    add_signature_table(doc)
-
-    buf = io.BytesIO(); doc.save(buf); return buf.getvalue()
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
 
 
 # ════════════════════════════════════════
