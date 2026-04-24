@@ -222,29 +222,80 @@ def _tpl_set_run(para, idx, text):
         para.runs[idx].text = text
 
 
-_MIN_TRAILING_TABS = 25  # จำนวน trailing tab ขั้นต่ำเพื่อให้เส้นประลากถึงขอบขวา
+# จำนวน trailing tab ที่พอดีกับ content width โดยไม่ wrap:
+# content = 9026 twips, default tab = 720 twips → max 12 stops จาก 0
+# para มี leading tabs 2 ตัว (1440 twips) → trailing ≤ 10 ก็ปลอดภัย
+_TARGET_TRAILING_TABS = 10
+
+# Wingdings checkbox characters
+_CKBOX_CHECKED   = ("F0FE", "Wingdings")    # ☑
+_CKBOX_UNCHECKED = ("F0A3", "Wingdings 2")  # ☐
+
+# weather_morning value → (para_idx, run_idx ที่มี w:sym)
+_WEATHER_MAP = {
+    "แจ่มใส":        (8, 1),
+    "เมฆมาก":       (8, 8),
+    "ฝนตกเล็กน้อย": (9, 1),
+    "ฝนตกหนัก":     (9, 5),
+}
+
+def _tpl_set_checkbox(run, checked: bool):
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    sym = run._r.find(f"{{{ns}}}sym")
+    if sym is None:
+        return
+    char, font = _CKBOX_CHECKED if checked else _CKBOX_UNCHECKED
+    sym.set(qn("w:char"), char)
+    sym.set(qn("w:font"), font)
+
+
+def _tpl_fill_weather(paras, weather_morning: str):
+    """ติ๊กช่องสภาพอากาศตาม weather_morning — untick ทั้งหมดก่อน แล้วติ๊กที่ตรง"""
+    if not weather_morning:
+        return
+    # untick ทั้งหมด
+    for pidx, ridx in _WEATHER_MAP.values():
+        _tpl_set_checkbox(paras[pidx].runs[ridx], False)
+    # หา key ที่ตรง
+    matched = None
+    if "ฝนตกหนัก" in weather_morning:
+        matched = "ฝนตกหนัก"
+    elif any(k in weather_morning for k in ("ฝนตกเล็กน้อย", "ฝนตกน้อย", "ฝนเล็กน้อย")):
+        matched = "ฝนตกเล็กน้อย"
+    elif any(k in weather_morning for k in ("ฝนตก", "ฝน")):
+        matched = "ฝนตกเล็กน้อย"  # ฝนทั่วไป = เล็กน้อย
+    elif any(k in weather_morning for k in ("เมฆมาก", "มืดครึ้ม", "ครึ้ม", "มีเมฆ")):
+        matched = "เมฆมาก"
+    elif any(k in weather_morning for k in ("แจ่มใส", "แดด", "ร้อน", "หมอก")):
+        matched = "แจ่มใส"
+    if matched:
+        pidx, ridx = _WEATHER_MAP[matched]
+        _tpl_set_checkbox(paras[pidx].runs[ridx], True)
+
 
 def _tpl_set_activity_line(para, text_run_idx, text):
-    """ใส่ข้อความ activity — รักษา trailing \\t runs และเพิ่มให้ครบ _MIN_TRAILING_TABS
-    เพื่อให้เส้นประ (w:u dotted บน tab runs) ลากต่อเนื่องถึงขอบขวา
+    """ใส่ข้อความ activity และ normalize trailing tabs ให้พอดี _TARGET_TRAILING_TABS
+    เพื่อให้เส้นประลากถึงขอบขวาโดยไม่ wrap ลงบรรทัดถัดไป
     """
     if text_run_idx < len(para.runs):
         para.runs[text_run_idx].text = text
-    # ล้างเฉพาะ runs ที่มีข้อความ (ไม่ใช่ tab หรือเปล่า) หลัง text_run_idx
+    # ล้าง runs ที่มีข้อความ (ไม่ใช่ tab/เปล่า) หลัง text_run_idx
     for i in range(text_run_idx + 1, len(para.runs)):
         if para.runs[i].text not in ("\t", ""):
             para.runs[i].text = ""
-    # ลบ custom tab stops ที่อาจเพิ่มมาก่อนหน้า
+    # ลบ custom tab stops
     pPr = para._p.get_or_add_pPr()
     for tabs_el in pPr.findall(qn("w:tabs")):
         pPr.remove(tabs_el)
-    # นับ trailing tab runs ที่มีอยู่ ถ้าน้อยกว่า _MIN_TRAILING_TABS ให้เพิ่ม
-    tab_runs = [r for r in para.runs if r.text == "\t"]
-    needed = _MIN_TRAILING_TABS - len(tab_runs)
-    if needed > 0 and tab_runs:
-        # clone run สุดท้าย (มี w:u dotted เหมือนกัน) แล้ว append เพิ่ม
-        tmpl_r = tab_runs[-1]._r
-        for _ in range(needed):
+    # normalize trailing tabs เฉพาะ runs หลัง text_run_idx
+    trailing = [r for i, r in enumerate(para.runs) if i > text_run_idx and r.text == "\t"]
+    n = len(trailing)
+    if n > _TARGET_TRAILING_TABS:
+        for r in trailing[_TARGET_TRAILING_TABS:]:
+            r.text = ""          # ล้าง tabs ส่วนเกิน
+    elif n < _TARGET_TRAILING_TABS and trailing:
+        tmpl_r = trailing[-1]._r
+        for _ in range(_TARGET_TRAILING_TABS - n):
             para._p.append(deepcopy(tmpl_r))
 
 
@@ -268,11 +319,10 @@ def _tpl_insert_activity(ref_elem, num, act_text):
     new_p = deepcopy(ref_elem)
     ref_elem.addnext(new_p)
     t_list = new_p.findall(f".//{{{ns}}}t")
-    # t[0], t[1] = leading tabs (indentation), t[2] = activity text, t[3..] = trailing tabs
-    TEXT_IDX = 2
-    if len(t_list) > TEXT_IDX:
-        t_list[TEXT_IDX].text = f"{num}. {act_text}"
-        t_list[TEXT_IDX].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    # tabs คือ <w:tab/> ไม่ใช่ <w:t> → t_list มีแค่ 1 element คือ activity text (index 0)
+    if t_list:
+        t_list[0].text = f"{num}. {act_text}"
+        t_list[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
     return new_p
 
 
@@ -314,29 +364,30 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
     _tpl_set_run(paras[1], 2, str(d.day))
     _tpl_set_run(paras[1], 6, f"{THAI_MONTHS_FULL[d.month]}   พ.ศ.{d.year+543}")
 
-    # 2. ระดับน้ำ
+    # 2. สภาพอากาศ — ติ๊ก checkbox ให้ตรงกับ weather_morning
+    _tpl_fill_weather(paras, daily_data.get("weather_morning") or "")
+
+    # 3. ระดับน้ำ
     wl = daily_data.get("water_level")
     wl_str = ((f"+{wl:.2f}" if wl >= 0 else f"{wl:.2f}") + " ม.") if wl is not None else "— ม."
     _tpl_set_run(paras[11], 2, wl_str)
 
-    # 3. งานที่ทำ
+    # 4. งานที่ทำ
     activities = daily_data.get("activities") or []
-
     act1 = activities[0].get("desc") or activities[0].get("description") if activities else ""
-    # para[12]: run[3]=ข้อความ; runs[4-5]=ข้อความเก่า (จะถูกล้าง); runs[6-9]=trailing tabs
     _tpl_set_activity_line(paras[12], text_run_idx=3,
                            text=f"1. {act1}" if act1 else "1. —")
 
-    act2 = (activities[1].get("desc") or activities[1].get("description") or "") if len(activities) > 1 else ""
-    # para[13]: run[2]=ข้อความ; runs[3-31]=trailing tabs (ทั้งหมดรักษาไว้)
-    _tpl_set_activity_line(paras[13], text_run_idx=2,
-                           text=f"2. {act2}" if act2 else "")
-
-    # กรณีมีงานมากกว่า 2 รายการ — แทรก paragraph ใหม่หลัง para[13]
-    ref_elem = paras[13]._element
-    for i, act in enumerate(activities[2:], start=3):
-        act_text = act.get("desc") or act.get("description") or ""
-        ref_elem = _tpl_insert_activity(ref_elem, i, act_text)
+    if len(activities) >= 2:
+        act2 = activities[1].get("desc") or activities[1].get("description") or ""
+        _tpl_set_activity_line(paras[13], text_run_idx=2, text=f"2. {act2}")
+        ref_elem = paras[13]._element
+        for i, act in enumerate(activities[2:], start=3):
+            act_text = act.get("desc") or act.get("description") or ""
+            ref_elem = _tpl_insert_activity(ref_elem, i, act_text)
+    else:
+        # มีงานแค่ 1 รายการ → ลบ para[13] ทิ้งเพื่อให้ ปัญหาอุปสรรค ต่อเนื่องทันที
+        _tpl_delete_para(paras[13])
 
     # 4. กำลังพล
     eng = (daily_data.get("engineers") or 0) + (daily_data.get("skilled_workers") or 0)

@@ -176,9 +176,19 @@ def parse_construction_report(text: str) -> dict:
                 '|'.join(re.escape(k) for k in THAI_MONTHS)+r')\s*\d{2,4}','',text).strip()
             if clean:
                 result["activities"].append({"keyword":"งานทั่วไป","type":"general","description":clean[:200]})
-    for kw, label in {"ฝนตก":"ฝนตก","ฝน":"มีฝน","แดดจ้า":"แดดจ้า","แดด":"แดด",
-                      "เมฆมาก":"เมฆมาก","เมฆ":"มีเมฆ","แจ่มใส":"แจ่มใส",
-                      "ร้อน":"อากาศร้อน","หมอก":"มีหมอก"}.items():
+    for kw, label in {
+            "ฝนตกหนัก":    "ฝนตกหนัก",
+            "ฝนตกเล็กน้อย": "ฝนตกเล็กน้อย",
+            "ฝนตก":        "ฝนตกเล็กน้อย",
+            "ฝน":          "ฝนตกเล็กน้อย",
+            "เมฆมาก":      "เมฆมาก",
+            "มืดครึ้ม":    "เมฆมาก",
+            "แดดจ้า":      "แจ่มใส",
+            "แดด":         "แจ่มใส",
+            "แจ่มใส":      "แจ่มใส",
+            "ร้อน":        "แจ่มใส",
+            "หมอก":        "แจ่มใส",
+    }.items():
         if kw in text: result["weather"] = label; break
     labor = result["labor"]
     result["workers"] = labor["total_workers"] if labor["total_workers"] > 0 else None
