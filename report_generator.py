@@ -110,7 +110,6 @@ def add_image_caption(doc, caption: str):
     lines = [l for l in caption.split('\n') if l.strip()]
     for i, line in enumerate(lines):
         run = cap_p.add_run(line)
-        run.italic = True
         run.font.name = "TH SarabunIT๙"
         run.font.size = Pt(16)
         if i < len(lines) - 1:
@@ -223,22 +222,30 @@ def _tpl_set_run(para, idx, text):
         para.runs[idx].text = text
 
 
+_MIN_TRAILING_TABS = 25  # จำนวน trailing tab ขั้นต่ำเพื่อให้เส้นประลากถึงขอบขวา
+
 def _tpl_set_activity_line(para, text_run_idx, text):
-    """ใส่ข้อความ activity — รักษา trailing \\t runs ทั้งหมดไว้เพื่อให้เส้นประลากถึงขอบขวา
-    (เส้นประมาจาก w:u dotted บน runs แต่ละตัว รวมถึง tab characters ที่สร้างพื้นที่ขาว)
+    """ใส่ข้อความ activity — รักษา trailing \\t runs และเพิ่มให้ครบ _MIN_TRAILING_TABS
+    เพื่อให้เส้นประ (w:u dotted บน tab runs) ลากต่อเนื่องถึงขอบขวา
     """
     if text_run_idx < len(para.runs):
         para.runs[text_run_idx].text = text
     # ล้างเฉพาะ runs ที่มีข้อความ (ไม่ใช่ tab หรือเปล่า) หลัง text_run_idx
-    # → รักษา trailing \\t runs ไว้ครบเพื่อให้เส้นประต่อเนื่องถึงขอบขวา
     for i in range(text_run_idx + 1, len(para.runs)):
-        run = para.runs[i]
-        if run.text not in ("\t", ""):
-            run.text = ""
-    # ลบ custom tab stops ที่อาจเพิ่มมาก่อนหน้า (ป้องกัน right-align bug)
+        if para.runs[i].text not in ("\t", ""):
+            para.runs[i].text = ""
+    # ลบ custom tab stops ที่อาจเพิ่มมาก่อนหน้า
     pPr = para._p.get_or_add_pPr()
     for tabs_el in pPr.findall(qn("w:tabs")):
         pPr.remove(tabs_el)
+    # นับ trailing tab runs ที่มีอยู่ ถ้าน้อยกว่า _MIN_TRAILING_TABS ให้เพิ่ม
+    tab_runs = [r for r in para.runs if r.text == "\t"]
+    needed = _MIN_TRAILING_TABS - len(tab_runs)
+    if needed > 0 and tab_runs:
+        # clone run สุดท้าย (มี w:u dotted เหมือนกัน) แล้ว append เพิ่ม
+        tmpl_r = tab_runs[-1]._r
+        for _ in range(needed):
+            para._p.append(deepcopy(tmpl_r))
 
 
 def _tpl_rebuild_para(para, new_text):
