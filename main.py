@@ -3,7 +3,7 @@ LINE Construction Report Bot - v4
 เพิ่ม: parser กำลังพล (วิศวกร/หัวหน้า/ช่าง/กรรมกร) และเครื่องจักร
 """
 
-import os, json, re, hmac, hashlib, base64, httpx
+import os, json, re, hmac, hashlib, base64, httpx, calendar
 from datetime import datetime, date, timedelta, timezone
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -176,6 +176,32 @@ def parse_construction_report(text: str) -> dict:
     return result
 
 
+def build_image_caption(text: str) -> str:
+    """ตัดบรรทัดกำลังพลและเครื่องจักรออก เหลือแค่วันที่และรายการงาน"""
+    lines = []
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(kw in stripped for kw in LABOR_FIELDS):
+            continue
+        if any(kw in stripped for kw in EQUIPMENT_KEYWORDS):
+            continue
+        lines.append(stripped)
+    return '\n'.join(lines)
+
+
+THAI_MONTHS_FULL = ["","มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน",
+                    "กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"]
+
+def thai_date_str(work_date: str) -> str:
+    try:
+        d = date.fromisoformat(work_date)
+        return f"{d.day} {THAI_MONTHS_FULL[d.month]} {d.year+543}"
+    except:
+        return work_date
+
+
 def parse_date_arg(arg):
     arg = arg.strip()
     m = re.match(r'^(\d{1,2})/(\d{1,2})$', arg)
@@ -229,6 +255,29 @@ def save_raw_report(record):
         return r.data[0].get("id") if r.data else None
     except Exception as e:
         print(f"❌ save_raw: {e}"); return None
+
+
+def delete_daily_data(work_date: str) -> dict:
+    """ลบข้อมูลทั้งหมดของวันที่กำหนดออกจาก 3 ตาราง"""
+    if not supabase:
+        return {"ok": False, "msg": "ไม่ได้เชื่อมต่อ Supabase"}
+    results = {}
+    try:
+        r = supabase.table("daily_reports").delete().eq("work_date", work_date).execute()
+        results["daily_reports"] = len(r.data or [])
+    except Exception as e:
+        print(f"❌ del daily_reports: {e}"); results["daily_reports"] = -1
+    try:
+        r = supabase.table("report_activities").delete().eq("work_date", work_date).execute()
+        results["report_activities"] = len(r.data or [])
+    except Exception as e:
+        print(f"❌ del report_activities: {e}"); results["report_activities"] = -1
+    try:
+        r = supabase.table("line_reports").delete().eq("work_date", work_date).execute()
+        results["line_reports"] = len(r.data or [])
+    except Exception as e:
+        print(f"❌ del line_reports: {e}"); results["line_reports"] = -1
+    return {"ok": True, "results": results}
 
 
 def upsert_daily_report(work_date, parsed):
@@ -318,11 +367,47 @@ def _enrich_days(days):
     return days
 
 
-def get_week_daily_list(week_start):
+def get_week_range(week_no: int, year: int, month: int):
+    """คืน (start_date, end_date) ของสัปดาห์ที่ week_no (1-4) ในเดือนนั้น
+    สัปดาห์ที่ 1: 1-7  |  2: 8-15  |  3: 16-23  |  4: 24-สิ้นเดือน
+    """
+    last_day = calendar.monthrange(year, month)[1]
+    ranges = {1: (1, 7), 2: (8, 15), 3: (16, 23), 4: (24, last_day)}
+    s, e = ranges.get(week_no, (1, 7))
+    return date(year, month, s), date(year, month, e)
+
+
+def get_current_week_no(d: date) -> int:
+    if d.day <= 7:  return 1
+    if d.day <= 15: return 2
+    if d.day <= 23: return 3
+    return 4
+
+
+def parse_weekly_arg(arg):
+    """แปล arg ของ /weekly → (week_no, year, month)
+    รูปแบบ: (ว่าง) | "2" | "2/04" | "2/04/2569"
+    """
+    today = date.today()
+    if not arg:
+        return get_current_week_no(today), today.year, today.month
+    parts = arg.split('/')
+    try:
+        wk = int(parts[0])
+        if not 1 <= wk <= 4:
+            return None
+        mo = int(parts[1]) if len(parts) > 1 else today.month
+        yr_raw = int(parts[2]) if len(parts) > 2 else today.year
+        yr = yr_raw - 543 if yr_raw > 2400 else yr_raw
+        return wk, yr, mo
+    except:
+        return None
+
+
+def get_week_daily_list(start_date: str, end_date: str):
     if not supabase: return []
     try:
-        ws,we = date.fromisoformat(week_start), date.fromisoformat(week_start)+timedelta(days=6)
-        r = supabase.table("v_daily_report_full").select("*").gte("work_date",str(ws)).lte("work_date",str(we)).order("work_date").execute()
+        r = supabase.table("v_daily_report_full").select("*").gte("work_date", start_date).lte("work_date", end_date).order("work_date").execute()
         return _enrich_days(r.data or [])
     except Exception as e:
         print(f"❌ get_week: {e}"); return []
@@ -346,8 +431,14 @@ def _help_text():
         "━━━━━━━━━━━━━━━\n"
         "/daily          → รายงานวันนี้\n"
         "/daily 23/04    → รายงานวันที่ 23 เม.ย.\n"
-        "/weekly         → รายงานสัปดาห์นี้\n"
+        "/weekly         → รายงานสัปดาห์ปัจจุบัน\n"
+        "/weekly 2       → รายงานสัปดาห์ที่ 2 เดือนนี้\n"
+        "/weekly 2/04    → รายงานสัปดาห์ที่ 2 เดือนเม.ย.\n"
         "/monthly        → รายงานเดือนนี้\n"
+        "━━━━━━━━━━━━━━━\n"
+        "🗑️ คำสั่งลบข้อมูล:\n"
+        "/delete         → ลบข้อมูลวันนี้\n"
+        "/delete 22/04   → ลบข้อมูลวันที่ 22 เม.ย.\n"
         "━━━━━━━━━━━━━━━\n"
         "📝 ตัวอย่างการบันทึก:\n"
         "วันที่ 23 เมษายน 2568 อากาศแดด\n"
@@ -361,6 +452,27 @@ def _help_text():
 async def handle_command(cmd, reply_token, user_id):
     parts = cmd.strip().split()
     command, arg = parts[0].lower(), (parts[1] if len(parts)>1 else None)
+
+    if command == "/delete":
+        td = parse_date_arg(arg) if arg else str(date.today())
+        if not td:
+            await reply_to_line(reply_token, "❌ รูปแบบวันที่ไม่ถูกต้อง\nตัวอย่าง: /delete 22/04"); return
+        d_thai = thai_date_str(td)
+        await reply_to_line(reply_token, f"⏳ กำลังลบข้อมูลวันที่ {d_thai}...")
+        res = delete_daily_data(td)
+        if res["ok"]:
+            r = res["results"]
+            await reply_to_line(reply_token, (
+                f"🗑️ ลบข้อมูลวันที่ {d_thai} เรียบร้อย\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"• รายงานประจำวัน: {r.get('daily_reports',0)} รายการ\n"
+                f"• รายการงาน: {r.get('report_activities',0)} รายการ\n"
+                f"• ข้อความดิบ: {r.get('line_reports',0)} รายการ"
+            ))
+        else:
+            await reply_to_line(reply_token, f"❌ ลบไม่สำเร็จ: {res['msg']}")
+        return
+
     await reply_to_line(reply_token, "⏳ กำลังสร้างรายงาน กรุณารอสักครู่...")
     try:
         if command == "/daily":
@@ -368,11 +480,17 @@ async def handle_command(cmd, reply_token, user_id):
             fb = await generate_daily(td, get_daily_data(td), PROJECT_NAME)
             fn = f"Daily_Report_{td}.docx"
         elif command == "/weekly":
-            ws = parse_date_arg(arg) if arg else str(date.today()-timedelta(days=date.today().weekday()))
-            dl = get_week_daily_list(ws)
+            parsed_w = parse_weekly_arg(arg)
+            if not parsed_w:
+                await reply_to_line(reply_token,
+                    "❌ รูปแบบไม่ถูกต้อง\nตัวอย่าง:\n/weekly        → สัปดาห์ปัจจุบัน\n/weekly 2      → สัปดาห์ที่ 2 เดือนนี้\n/weekly 2/04   → สัปดาห์ที่ 2 เดือนเม.ย.")
+                return
+            wk, yr, mo = parsed_w
+            ws, we = get_week_range(wk, yr, mo)
+            dl = get_week_daily_list(str(ws), str(we))
             if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในสัปดาห์นี้"); return
-            fb = await generate_weekly(ws, dl, PROJECT_NAME)
-            fn = f"Weekly_Report_{ws}.docx"
+            fb = await generate_weekly(str(ws), dl, PROJECT_NAME, week_no=wk, week_end=str(we))
+            fn = f"Weekly_Report_{yr}-{mo:02d}_W{wk}.docx"
         elif command == "/monthly":
             ms = arg or date.today().strftime("%Y-%m")
             dl = get_month_daily_list(ms)
@@ -463,7 +581,7 @@ async def webhook(request: Request):
                 last        = last_text_by_user.get(user_id)
                 caption, work_date = "", today_str
                 if last and (datetime.now(timezone.utc)-last["timestamp"]).total_seconds() < 600:
-                    caption, work_date = last["text"], last["work_date"]
+                    caption, work_date = build_image_caption(last["text"]), last["work_date"]
                 save_raw_report({"timestamp":ts_tz,"user_id":user_id,"message_type":"image",
                     "raw_text":f"[รูปภาพ: {fn}]","work_date":work_date,
                     "activities":"[]","quantities":"[]","workers":None,"weather":None,

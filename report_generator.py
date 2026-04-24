@@ -234,7 +234,10 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
         doc.add_heading("5. รูปภาพประกอบ", level=2)
         for img_info in images:
             url     = img_info.get("url") or img_info.get("image_url")
-            caption = clean_caption(img_info.get("caption") or "")
+            acts_text = clean_caption(img_info.get("caption") or "")
+            caption = f"วันที่ {thai_date(d)}"
+            if acts_text:
+                caption += f"\n\n{acts_text}"
             if not url: continue
             img_bytes = await download_image_bytes(url)
             if img_bytes:
@@ -258,13 +261,19 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
 # WEEKLY REPORT
 # ════════════════════════════════════════
 
-async def generate_weekly(week_start: str, daily_list: list, project_name: str = "โครงการก่อสร้าง") -> bytes:
+async def generate_weekly(week_start: str, daily_list: list, project_name: str = "โครงการก่อสร้าง",
+                          week_no: int = None, week_end: str = None) -> bytes:
     doc = Document()
     style_doc(doc)
     ws = date.fromisoformat(week_start)
-    we = ws + timedelta(days=6)
+    we = date.fromisoformat(week_end) if week_end else ws + timedelta(days=6)
+    if week_no:
+        subtitle = (f"สัปดาห์ที่ {week_no}  |  {thai_date(ws)} — {thai_date(we)}"
+                    f"  |  ฉบับที่ WR-{ws.strftime('%Y%m')}-W{week_no}")
+    else:
+        subtitle = f"{thai_date(ws)} — {thai_date(we)}  |  ฉบับที่ WR-{ws.strftime('%Y%m%d')}"
     add_title_block(doc, "รายงานความก้าวหน้าประจำสัปดาห์ (WEEKLY PROGRESS REPORT)",
-        f"{thai_date(ws)} — {thai_date(we)}  |  ฉบับที่ WR-{ws.strftime('%Y%m%d')}", project_name)
+        subtitle, project_name)
 
     # สรุปสัปดาห์
     doc.add_heading("1. สรุปภาพรวมสัปดาห์", level=2)
@@ -337,7 +346,11 @@ async def generate_weekly(week_start: str, daily_list: list, project_name: str =
         if images:
             for img_info in images:
                 url     = img_info.get("url") or img_info.get("image_url")
-                caption = clean_caption(img_info.get("caption") or "")
+                acts_text = clean_caption(img_info.get("caption") or "")
+                _wd = day_data.get("work_date", "")
+                caption = f"วันที่ {thai_date(_wd)}" if _wd else ""
+                if acts_text:
+                    caption += f"\n\n{acts_text}" if caption else acts_text
                 if not url: continue
                 img_bytes = await download_image_bytes(url)
                 if img_bytes:
@@ -427,7 +440,11 @@ async def generate_monthly(month_str: str, daily_list: list, project_name: str =
         dr.font.color.rgb = RGBColor(0x1F,0x4E,0x79)
         for img_info in images:
             url     = img_info.get("url") or img_info.get("image_url")
-            caption = clean_caption(img_info.get("caption") or "")
+            acts_text = clean_caption(img_info.get("caption") or "")
+            _wd = day_data.get("work_date", "")
+            caption = f"วันที่ {thai_date(_wd)}" if _wd else ""
+            if acts_text:
+                caption += f"\n\n{acts_text}" if caption else acts_text
             if not url: continue
             img_bytes = await download_image_bytes(url)
             if img_bytes:
