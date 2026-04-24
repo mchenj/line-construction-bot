@@ -217,37 +217,27 @@ _EQUIP_MAP = {
 }
 
 
-_CONTENT_WIDTH_TWIPS = 9026  # A4 21cm − 2.54cm×2 margins → twips
-
 def _tpl_set_run(para, idx, text):
     if idx < len(para.runs):
         para.runs[idx].text = text
 
 
-def _tpl_set_activity_line(para, text_run_idx, text, keep_tab_run_idx):
-    """ใส่ข้อความ activity + เพิ่ม right-aligned tab ให้เส้นประลากถึงขอบขวา"""
-    # ใส่ข้อความ
+def _tpl_set_activity_line(para, text_run_idx, text):
+    """ใส่ข้อความ activity — รักษา trailing \\t runs ทั้งหมดไว้เพื่อให้เส้นประลากถึงขอบขวา
+    (เส้นประมาจาก w:u dotted บน runs แต่ละตัว รวมถึง tab characters ที่สร้างพื้นที่ขาว)
+    """
     if text_run_idx < len(para.runs):
         para.runs[text_run_idx].text = text
-    # ล้าง runs อื่น ๆ ที่ไม่ใช่ tab ที่จะเก็บไว้
-    for i, run in enumerate(para.runs):
-        if i != text_run_idx and i != keep_tab_run_idx:
-            if i > text_run_idx:   # ล้างเฉพาะ runs หลังข้อความ
-                run.text = ""
-    # ตรวจให้ tab run มีข้อมูลถูกต้อง
-    if keep_tab_run_idx < len(para.runs):
-        para.runs[keep_tab_run_idx].text = "\t"
-
-    # เพิ่ม right-aligned tab stop ที่ขอบขวาของ content
+    # ล้างเฉพาะ runs ที่มีข้อความ (ไม่ใช่ tab หรือเปล่า) หลัง text_run_idx
+    # → รักษา trailing \\t runs ไว้ครบเพื่อให้เส้นประต่อเนื่องถึงขอบขวา
+    for i in range(text_run_idx + 1, len(para.runs)):
+        run = para.runs[i]
+        if run.text not in ("\t", ""):
+            run.text = ""
+    # ลบ custom tab stops ที่อาจเพิ่มมาก่อนหน้า (ป้องกัน right-align bug)
     pPr = para._p.get_or_add_pPr()
-    for tabs in pPr.findall(qn("w:tabs")):
-        pPr.remove(tabs)
-    tabs_el = OxmlElement("w:tabs")
-    tab_el  = OxmlElement("w:tab")
-    tab_el.set(qn("w:val"), "right")
-    tab_el.set(qn("w:pos"), str(_CONTENT_WIDTH_TWIPS))
-    tabs_el.append(tab_el)
-    pPr.append(tabs_el)
+    for tabs_el in pPr.findall(qn("w:tabs")):
+        pPr.remove(tabs_el)
 
 
 def _tpl_rebuild_para(para, new_text):
@@ -262,16 +252,19 @@ def _tpl_delete_para(para):
 
 
 def _tpl_insert_activity(ref_elem, num, act_text):
-    """แทรก paragraph ของ activity ถัดจาก ref_elem, คืนค่า element ใหม่"""
+    """แทรก paragraph ของ activity ถัดจาก ref_elem, คืนค่า element ใหม่
+    deepcopy para[13] structure: t[0]=\\t, t[1]=\\t, t[2]=text, t[3..]=\\t
+    → แก้เฉพาะ t[2] (index ของข้อความ), รักษา trailing tabs ไว้เพื่อเส้นประ
+    """
     ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     new_p = deepcopy(ref_elem)
     ref_elem.addnext(new_p)
-    for i, t in enumerate(new_p.findall(f".//{{{ns}}}t")):
-        if i == 0:
-            t.text = f"\t\t{num}. {act_text}"
-            t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-        else:
-            t.text = ""
+    t_list = new_p.findall(f".//{{{ns}}}t")
+    # t[0], t[1] = leading tabs (indentation), t[2] = activity text, t[3..] = trailing tabs
+    TEXT_IDX = 2
+    if len(t_list) > TEXT_IDX:
+        t_list[TEXT_IDX].text = f"{num}. {act_text}"
+        t_list[TEXT_IDX].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
     return new_p
 
 
@@ -322,16 +315,14 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
     activities = daily_data.get("activities") or []
 
     act1 = activities[0].get("desc") or activities[0].get("description") if activities else ""
-    # para[12]: run[3]=ข้อความ, run[6]=tab สุดท้าย → เส้นประถึงขอบขวา
+    # para[12]: run[3]=ข้อความ; runs[4-5]=ข้อความเก่า (จะถูกล้าง); runs[6-9]=trailing tabs
     _tpl_set_activity_line(paras[12], text_run_idx=3,
-                           text=f"1. {act1}" if act1 else "1. —",
-                           keep_tab_run_idx=6)
+                           text=f"1. {act1}" if act1 else "1. —")
 
     act2 = (activities[1].get("desc") or activities[1].get("description") or "") if len(activities) > 1 else ""
-    # para[13]: run[2]=ข้อความ, run[3]=tab สุดท้าย → เส้นประถึงขอบขวา
+    # para[13]: run[2]=ข้อความ; runs[3-31]=trailing tabs (ทั้งหมดรักษาไว้)
     _tpl_set_activity_line(paras[13], text_run_idx=2,
-                           text=f"2. {act2}" if act2 else "",
-                           keep_tab_run_idx=3)
+                           text=f"2. {act2}" if act2 else "")
 
     # กรณีมีงานมากกว่า 2 รายการ — แทรก paragraph ใหม่หลัง para[13]
     ref_elem = paras[13]._element
