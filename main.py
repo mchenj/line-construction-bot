@@ -72,7 +72,7 @@ EQUIPMENT_KEYWORDS = [
     "รถบรรทุก","รถดั้ม","รถเทรเลอร์",
     "รถเกรด","รถบด","รถบดล้อยาง","รถสั่นสะเทือน",
     "รถเครน","เครน","ปั่นจั่น",
-    "รถน้ำ","รถสูบน้ำ",
+    "รถนํ้า","รถน้ำ","รถสูบน้ำ",    # รองรับทั้ง นํ้า (nikhahit) และ น้ำ (sara am)
     "รถสกัดคอนกรีตเสาเข็ม","รถสกัดคอนกรีต",
     "รถแทร็กเตอร์","แทร็กเตอร์",
     "รถ PRIME COAT","รถ PAVE",
@@ -121,15 +121,25 @@ def parse_labor(text: str) -> dict:
 
 def parse_equipment(text: str) -> list:
     equip, seen = [], set()
-    unit_pat = r'(คัน|เครื่อง|ตัว|แห่ง|ชุด)'
+    # รองรับ: คัน / ค้น / ค่น (typo), เครื่อง, ตัว, แห่ง, ชุด
+    unit_pat = r'(คัน|ค้น|ค่น|เครื่อง|ตัว|แห่ง|ชุด)'
+    # normalize ชื่อเครื่องจักรในข้อความ: นํ้า → น้ำ (Unicode variant)
+    text_norm = text.replace('นํ้า', 'น้ำ')
     for kw in EQUIPMENT_KEYWORDS:
-        if kw in text and kw not in seen:
-            if any(kw in s for s in seen):  # kw เป็น substring ของที่บันทึกแล้ว เช่น แบ็คโฮ ⊂ รถแบ็คโฮ
-                seen.add(kw)
+        kw_norm = kw.replace('นํ้า', 'น้ำ')  # normalize keyword ด้วย
+        if kw_norm in text_norm and kw_norm not in seen:
+            if any(kw_norm in s for s in seen):
+                seen.add(kw_norm)
                 continue
-            seen.add(kw)
-            m = re.search(rf'{re.escape(kw)}\s*(\d+)\s*{unit_pat}', text)
-            equip.append({"name":kw, "qty": int(m.group(1)) if m else 1, "unit": m.group(2) if m else "คัน"})
+            seen.add(kw_norm)
+            m = re.search(rf'{re.escape(kw_norm)}\s*(\d+)\s*{unit_pat}', text_norm)
+            # normalize ชื่อที่เก็บ: ใช้ น้ำ เสมอ
+            name_stored = kw_norm
+            qty = int(m.group(1)) if m else 1
+            unit = m.group(2) if m else "คัน"
+            if unit in ("ค้น", "ค่น"):  # normalize unit typo
+                unit = "คัน"
+            equip.append({"name": name_stored, "qty": qty, "unit": unit})
     return equip
 
 
@@ -204,10 +214,14 @@ def build_image_caption(text: str) -> str:
             continue
         if any(kw in stripped for kw in LABOR_FIELDS):
             continue
-        if any(kw in stripped for kw in EQUIPMENT_KEYWORDS):
+        # normalize นํ้า → น้ำ ก่อนเช็ค equipment keyword
+        stripped_norm = stripped.replace('นํ้า', 'น้ำ')
+        if any(kw.replace('นํ้า', 'น้ำ') in stripped_norm for kw in EQUIPMENT_KEYWORDS):
             continue
-        # ตัดบรรทัดระดับน้ำ เช่น "+92.50" หรือ "+92.50 ม."
+        # ตัดบรรทัดระดับน้ำ เช่น "+92.50", "ระดับน้ำ +92.60", "ระดับนํ้า +92.60"
         if re.match(r'^[+-]\d+(?:\.\d+)?\s*(?:ม\.|เมตร|m)?$', stripped):
+            continue
+        if re.search(r'ระดับน[^\s]*า', stripped) or re.search(r'ระดับน้ำ', stripped):
             continue
         lines.append(stripped)
     return '\n'.join(lines)
