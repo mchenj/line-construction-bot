@@ -391,15 +391,18 @@ def get_daily_data(work_date):
         if eq.data:
             data.update(eq.data[0])
 
-        # ดึง activities จาก report_activities
+        # ดึง activities จาก report_activities (deduplicate ด้วย description)
         acts = supabase.table("report_activities").select(
             "description,seq_no,activity_type"
         ).eq("work_date", work_date).order("seq_no").execute()
         if acts.data:
-            data["activities"] = [
-                {"desc": a.get("description", ""), "seq": a.get("seq_no", i+1)}
-                for i, a in enumerate(acts.data)
-            ]
+            seen_desc, unique_acts = set(), []
+            for i, a in enumerate(acts.data):
+                desc = (a.get("description") or "").strip()
+                if desc and desc not in seen_desc:
+                    seen_desc.add(desc)
+                    unique_acts.append({"desc": desc, "seq": a.get("seq_no", i+1)})
+            data["activities"] = unique_acts
 
         # ดึง images จาก report_images
         imgs = supabase.table("report_images").select(
