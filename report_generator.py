@@ -276,30 +276,56 @@ def _tpl_fill_weather(paras, weather_morning: str):
         _tpl_set_checkbox(paras[pidx].runs[ridx], True)
 
 
+def _remove_underline_from_para(para):
+    """ลบ <w:u> ออกจากทุก run ใน paragraph — ใช้กับ activity rows เพื่อเอาเส้นประออก"""
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    for run in para.runs:
+        rPr = run._r.find(f"{{{ns}}}rPr")
+        if rPr is not None:
+            for u_el in rPr.findall(f"{{{ns}}}u"):
+                rPr.remove(u_el)
+
+
+def _set_tight_spacing(p_elem):
+    """ตั้ง spacing ให้ชิดติดกัน: before=0, after=0, single line — ใช้กับ activity rows"""
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    pPr = p_elem.find(f"{{{ns}}}pPr")
+    if pPr is None:
+        pPr = OxmlElement("w:pPr")
+        p_elem.insert(0, pPr)
+    # ลบ spacing เก่าแล้วใส่ใหม่
+    for sp in pPr.findall(f"{{{ns}}}spacing"):
+        pPr.remove(sp)
+    spacing = OxmlElement("w:spacing")
+    spacing.set(qn("w:before"), "0")
+    spacing.set(qn("w:after"), "0")
+    spacing.set(qn("w:line"), "240")
+    spacing.set(qn("w:lineRule"), "auto")
+    # ใส่ spacing ก่อน jc (หรือต่อท้ายถ้าไม่มี jc)
+    jc = pPr.find(f"{{{ns}}}jc")
+    if jc is not None:
+        pPr.insert(list(pPr).index(jc), spacing)
+    else:
+        pPr.append(spacing)
+
+
 def _tpl_set_activity_line(para, text_run_idx, text):
-    """ใส่ข้อความ activity และ normalize trailing tabs ให้พอดี _TARGET_TRAILING_TABS
-    เพื่อให้เส้นประลากถึงขอบขวาโดยไม่ wrap ลงบรรทัดถัดไป
-    """
+    """ใส่ข้อความ activity, ลบ trailing tabs ทั้งหมดออก (XML level), และลบเส้นประ"""
     if text_run_idx < len(para.runs):
         para.runs[text_run_idx].text = text
-    # ล้าง runs ที่มีข้อความ (ไม่ใช่ tab/เปล่า) หลัง text_run_idx
-    for i in range(text_run_idx + 1, len(para.runs)):
-        if para.runs[i].text not in ("\t", ""):
-            para.runs[i].text = ""
+    # ลบ <w:r> elements ทั้งหมดหลัง text_run_idx ออกจาก XML โดยตรง
+    # (run.text="" ไม่พอ เพราะ <w:tab/> ยังคงอยู่ใน XML)
+    runs_to_remove = [para.runs[i]._r for i in range(text_run_idx + 1, len(para.runs))]
+    for r_el in runs_to_remove:
+        r_el.getparent().remove(r_el)
     # ลบ custom tab stops
     pPr = para._p.get_or_add_pPr()
     for tabs_el in pPr.findall(qn("w:tabs")):
         pPr.remove(tabs_el)
-    # normalize trailing tabs เฉพาะ runs หลัง text_run_idx
-    trailing = [r for i, r in enumerate(para.runs) if i > text_run_idx and r.text == "\t"]
-    n = len(trailing)
-    if n > _TARGET_TRAILING_TABS:
-        for r in trailing[_TARGET_TRAILING_TABS:]:
-            r.text = ""          # ล้าง tabs ส่วนเกิน
-    elif n < _TARGET_TRAILING_TABS and trailing:
-        tmpl_r = trailing[-1]._r
-        for _ in range(_TARGET_TRAILING_TABS - n):
-            para._p.append(deepcopy(tmpl_r))
+    # ลบเส้นประ (dotted underline) ออกจากทุก run ที่เหลือ
+    _remove_underline_from_para(para)
+    # ตั้ง spacing ให้ชิดติดกัน (ไม่มี space before/after, single line)
+    _set_tight_spacing(para._p)
 
 
 def _tpl_rebuild_para(para, new_text):
@@ -315,17 +341,33 @@ def _tpl_delete_para(para):
 
 def _tpl_insert_activity(ref_elem, num, act_text):
     """แทรก paragraph ของ activity ถัดจาก ref_elem, คืนค่า element ใหม่
-    deepcopy para[13] structure: t[0]=\\t, t[1]=\\t, t[2]=text, t[3..]=\\t
-    → แก้เฉพาะ t[2] (index ของข้อความ), รักษา trailing tabs ไว้เพื่อเส้นประ
+    deepcopy para[13] structure แล้วลบ trailing tabs, dotted underline และ set spacing
     """
     ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     new_p = deepcopy(ref_elem)
     ref_elem.addnext(new_p)
+
+    # ตั้งข้อความและลบ trailing tab runs ออกจาก XML
     t_list = new_p.findall(f".//{{{ns}}}t")
-    # tabs คือ <w:tab/> ไม่ใช่ <w:t> → t_list มีแค่ 1 element คือ activity text (index 0)
     if t_list:
         t_list[0].text = f"{num}. {act_text}"
         t_list[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        # หา <w:r> ที่เป็น parent ของ <w:t> แล้วลบ <w:r> ทั้งหมดหลังจากนั้น
+        text_run_elem = t_list[0].getparent()
+        all_runs = new_p.findall(f"{{{ns}}}r")
+        found = False
+        for r_el in all_runs:
+            if found:
+                r_el.getparent().remove(r_el)
+            elif r_el is text_run_elem:
+                found = True
+
+    # ลบ dotted underline ออกจากทุก run ที่เหลือ
+    for rPr in new_p.findall(f".//{{{ns}}}rPr"):
+        for u_el in rPr.findall(f"{{{ns}}}u"):
+            rPr.remove(u_el)
+    # ตั้ง spacing ให้ชิดติดกัน
+    _set_tight_spacing(new_p)
     return new_p
 
 
