@@ -521,6 +521,59 @@ def parse_weekly_arg(arg):
         return None
 
 
+def parse_date_range_arg(arg):
+    """แปล arg ของช่วงวันที่ → (start_date, end_date)
+    รูปแบบที่รองรับ:
+      "23-25/04"        → 23-25 เม.ย. ปีปัจจุบัน
+      "23-25/04/2569"   → 23-25 เม.ย. 2569
+      "23/04-25/04"     → 23 เม.ย. ถึง 25 เม.ย.
+      "16/03-23/03/69"  → ข้ามเดือนก็ได้ (ปี 2 หลักก็ได้)
+      "23/04/69-25/04/69"
+    """
+    today = date.today()
+    if not arg or "-" not in arg:
+        return None
+    a, b = arg.split("-", 1)
+    a, b = a.strip(), b.strip()
+
+    def _parse_one(s, default_year=None, default_month=None):
+        """parse 'DD' / 'DD/MM' / 'DD/MM/YYYY' → date"""
+        parts = s.split("/")
+        try:
+            day = int(parts[0])
+            mo = int(parts[1]) if len(parts) > 1 else (default_month or today.month)
+            if len(parts) > 2:
+                yr_raw = int(parts[2])
+                # 2-digit Buddhist year: 69 → 2569 → 2026
+                if yr_raw < 100:
+                    yr = 2500 + yr_raw - 543
+                elif yr_raw > 2400:
+                    yr = yr_raw - 543
+                else:
+                    yr = yr_raw
+            else:
+                yr = default_year or today.year
+            return date(yr, mo, day)
+        except Exception:
+            return None
+
+    # case 1: "23-25/04" → ใช้ MM/YYYY ของฝั่งขวามาเติมฝั่งซ้าย
+    if "/" not in a:
+        end = _parse_one(b)
+        if not end:
+            return None
+        start = _parse_one(a, default_year=end.year, default_month=end.month)
+    else:
+        end = _parse_one(b)
+        if not end:
+            return None
+        start = _parse_one(a, default_year=end.year, default_month=end.month)
+
+    if not start or not end or start > end:
+        return None
+    return start, end
+
+
 def get_week_daily_list(start_date: str, end_date: str):
     if not supabase: return []
     try:
@@ -566,8 +619,9 @@ def _help_text():
         "/weekly         → รายงานสัปดาห์ปัจจุบัน (เก่า)\n"
         "/weekly 2       → รายงานสัปดาห์ที่ 2 เดือนนี้\n"
         "/weekly2        → รายงานสัปดาห์ฉบับเต็ม (ZIP) ⭐\n"
-        "/weekly2 85     → สัปดาห์ที่ 85 (ฉบับเต็ม)\n"
-        "/weekly2pdf 85  → ฉบับเต็มรวม PDF เดียว ⭐\n"
+        "/weekly2 3/04   → สัปดาห์ที่ 3 เม.ย. (16-23)\n"
+        "/weekly2 23-25/04 → ช่วง 23-25 เม.ย. ⭐\n"
+        "/weekly2pdf 23-25/04 → ฉบับเต็มรวม PDF เดียว ⭐\n"
         "/monthly        → รายงานเดือนนี้\n"
         "━━━━━━━━━━━━━━━\n"
         "🌊 บันทึกระดับน้ำ (พิมพ์ตัวเลขอย่างเดียว):\n"
@@ -658,36 +712,61 @@ async def handle_command(cmd, reply_token, user_id):
             fb = await generate_weekly(str(ws), dl, PROJECT_NAME, week_no=wk, week_end=str(we))
             fn = f"Weekly_Report_{yr}-{mo:02d}_W{wk}.docx"
         elif command == "/weekly2":
-            # ใหม่: ใช้ template บริษัทจริง → ZIP รวม cover/TOC/รายละเอียด/ภาพถ่าย/รายงานประจำวัน 8 ใบ
-            parsed_w = parse_weekly_arg(arg)
-            if not parsed_w:
-                await reply_to_line(reply_token,
-                    "❌ รูปแบบไม่ถูกต้อง\nตัวอย่าง:\n/weekly2       → สัปดาห์ปัจจุบัน\n/weekly2 85    → สัปดาห์ที่ 85 เดือนนี้\n/weekly2 85/03 → สัปดาห์ที่ 85 เดือน มี.ค.")
-                return
-            wk, yr, mo = parsed_w
-            ws, we = get_week_range(wk, yr, mo)
+            # ใหม่: ใช้ template บริษัทจริง → ZIP รวม cover/TOC/รายละเอียด/ภาพถ่าย/รายงานประจำวัน
+            # ลอง parse date range ก่อน (เช่น "23-25/04") ถ้าไม่ได้ค่อย parse week_no
+            ws = we = wk = yr = mo = None
+            if arg and "-" in arg:
+                rng = parse_date_range_arg(arg)
+                if rng:
+                    ws, we = rng
+                    wk = get_current_week_no(ws)
+                    yr, mo = ws.year, ws.month
+            if ws is None:
+                parsed_w = parse_weekly_arg(arg)
+                if not parsed_w:
+                    await reply_to_line(reply_token,
+                        "❌ รูปแบบไม่ถูกต้อง\nตัวอย่าง:\n"
+                        "/weekly2              → สัปดาห์ปัจจุบัน\n"
+                        "/weekly2 3/04         → สัปดาห์ที่ 3 เม.ย. (16-23)\n"
+                        "/weekly2 23-25/04     → ช่วง 23-25 เม.ย.\n"
+                        "/weekly2 16-23/03/69  → ช่วง 16-23 มี.ค. 2569")
+                    return
+                wk, yr, mo = parsed_w
+                ws, we = get_week_range(wk, yr, mo)
             dl = get_week_daily_list(str(ws), str(we))
-            if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในสัปดาห์นี้"); return
+            if not dl: await reply_to_line(reply_token,
+                f"❌ ไม่พบข้อมูลในช่วง {ws} ถึง {we}"); return
             fb = await generate_weekly_phase1(week_no=wk, week_start=str(ws),
                                               daily_list=dl, project_name=PROJECT_NAME)
-            fn = f"Weekly_Report_W{wk}_{yr}-{mo:02d}.zip"
+            fn = f"Weekly_Report_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.zip"
         elif command == "/weekly2pdf":
             # ใหม่: generate weekly + รวมเป็น PDF เดียว (ต้องมี LibreOffice)
             if not _PDF_AVAILABLE:
                 await reply_to_line(reply_token, "❌ PDF merger ไม่พร้อมใช้งาน (ต้องติดตั้ง LibreOffice + pypdf)"); return
-            parsed_w = parse_weekly_arg(arg)
-            if not parsed_w:
-                await reply_to_line(reply_token,
-                    "❌ รูปแบบไม่ถูกต้อง\nตัวอย่าง:\n/weekly2pdf       → สัปดาห์ปัจจุบัน (PDF)\n/weekly2pdf 85    → สัปดาห์ที่ 85 (PDF)")
-                return
-            wk, yr, mo = parsed_w
-            ws, we = get_week_range(wk, yr, mo)
+            ws = we = wk = yr = mo = None
+            if arg and "-" in arg:
+                rng = parse_date_range_arg(arg)
+                if rng:
+                    ws, we = rng
+                    wk = get_current_week_no(ws)
+                    yr, mo = ws.year, ws.month
+            if ws is None:
+                parsed_w = parse_weekly_arg(arg)
+                if not parsed_w:
+                    await reply_to_line(reply_token,
+                        "❌ รูปแบบไม่ถูกต้อง\nตัวอย่าง:\n"
+                        "/weekly2pdf              → สัปดาห์ปัจจุบัน (PDF)\n"
+                        "/weekly2pdf 23-25/04     → ช่วง 23-25 เม.ย. (PDF)")
+                    return
+                wk, yr, mo = parsed_w
+                ws, we = get_week_range(wk, yr, mo)
             dl = get_week_daily_list(str(ws), str(we))
-            if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในสัปดาห์นี้"); return
+            if not dl: await reply_to_line(reply_token,
+                f"❌ ไม่พบข้อมูลในช่วง {ws} ถึง {we}"); return
             try:
                 fb = await generate_weekly_phase1_pdf(week_no=wk, week_start=str(ws),
                                                       daily_list=dl, project_name=PROJECT_NAME)
-                fn = f"Weekly_Report_W{wk}_{yr}-{mo:02d}.pdf"
+                fn = f"Weekly_Report_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.pdf"
             except Exception as e:
                 await reply_to_line(reply_token, f"❌ สร้าง PDF ไม่สำเร็จ: {e}\n(ลองใช้ /weekly2 แทน)"); return
         elif command == "/monthly":

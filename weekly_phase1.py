@@ -574,8 +574,20 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
                 fill_diary_table(tables[3], daily_list)
             if len(tables) > 4:
                 fill_weather_table(tables[4], daily_list)
+            # Phase 3: ผลการดำเนินงาน (Tables 0, 1) จาก data/construction_plan.xlsx
+            try:
+                from weekly_phase3 import (read_progress_detail, compute_progress_summary,
+                                           fill_progress_summary_table, fill_progress_detail_table)
+                detail = read_progress_detail()
+                if detail:
+                    summary = compute_progress_summary(detail)
+                    if len(tables) > 0:
+                        fill_progress_summary_table(tables[0], summary)
+                    if len(tables) > 1:
+                        fill_progress_detail_table(tables[1], detail)
+            except Exception as e:
+                print(f"⚠️ Phase 3 progress fill skipped: {e}")
             # บังคับให้หัวข้อ "บันทึกการปฏิบัติงานผู้รับจ้าง" (ก่อน table 3) ขึ้นหน้าใหม่เสมอ
-            # exclude="ของ" เพราะมีอีก heading "บันทึกการปฏิบัติงานของผู้รับจ้าง" ที่ไม่ใช่ตัวเดียวกัน
             force_page_break_before_heading(doc, "บันทึกการปฏิบัติงานผู้รับจ้าง",
                                             exclude_keyword="ของ")
             buf = io.BytesIO()
@@ -604,5 +616,15 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
                 zf.writestr(fname, fb)
             except Exception as e:
                 zf.writestr(f"ERROR_daily_{i+1}.txt", f"Error: {e}")
+
+        # ───── 4. ภาคผนวก 4: บุคลากร CM (Phase 3) ─────
+        try:
+            from weekly_phase3 import read_cm_personnel, fill_appendix4_xlsx, TEMPLATE_APPENDIX4_XLSX
+            cm_data = read_cm_personnel(ws, we)
+            if cm_data.get("personnel"):
+                fb = fill_appendix4_xlsx(TEMPLATE_APPENDIX4_XLSX, week_no, ws, we, cm_data)
+                zf.writestr(f"05_ภาคผนวก_4_บุคลากร_CM_W{week_no}.xlsx", fb)
+        except Exception as e:
+            zf.writestr(f"ERROR_appendix4.txt", f"Error: {e}")
 
     return zip_buf.getvalue()
