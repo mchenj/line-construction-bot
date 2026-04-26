@@ -47,9 +47,20 @@ def clean_caption(text: str) -> str:
     result = re.sub(r'วันที่\s+วันที่', 'วันที่', result)
     return result
 
+_THAI_DIGITS_MAP = str.maketrans("0123456789", "๐๑๒๓๔๕๖๗๘๙")
+
+def to_thai_digits(s) -> str:
+    """แปลงเลขอารบิก → เลขไทย: 24 → ๒๔"""
+    return str(s).translate(_THAI_DIGITS_MAP)
+
 def thai_date(d):
     if isinstance(d, str): d = date.fromisoformat(d)
     return f"{d.day} {THAI_MONTHS_FULL[d.month]} {d.year+543}"
+
+def thai_date_th_digits(d):
+    """24 เมษายน 2569 → ๒๔ เมษายน ๒๕๖๙"""
+    if isinstance(d, str): d = date.fromisoformat(d)
+    return f"{to_thai_digits(d.day)} {THAI_MONTHS_FULL[d.month]} {to_thai_digits(d.year+543)}"
 
 def thai_date_short(d):
     if isinstance(d, str): d = date.fromisoformat(d)
@@ -105,7 +116,9 @@ def add_title_block(doc, title, subtitle, project_name):
     doc.add_paragraph()
 
 def add_image_caption(doc, caption: str):
-    """เพิ่ม caption ใต้ภาพโดยใช้ line break แทน paragraph break เพื่อไม่ให้มีช่องว่าง"""
+    """เพิ่ม caption ใต้ภาพโดยใช้ line break แทน paragraph break เพื่อไม่ให้มีช่องว่าง
+    บังคับใช้ TH SarabunIT๙ ทั้ง ascii + cs (complex script ภาษาไทย)
+    """
     cap_p = doc.add_paragraph()
     cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     cap_p.paragraph_format.space_before = Pt(4)
@@ -115,6 +128,20 @@ def add_image_caption(doc, caption: str):
         run = cap_p.add_run(line)
         run.font.name = "TH SarabunIT๙"
         run.font.size = Pt(16)
+        # set CS font (สำคัญ! python-docx default ไม่ตั้งให้)
+        rPr = run._r.get_or_add_rPr()
+        rFonts = rPr.find(qn("w:rFonts"))
+        if rFonts is None:
+            rFonts = OxmlElement("w:rFonts")
+            rPr.append(rFonts)
+        for attr in ("ascii", "hAnsi", "cs"):
+            rFonts.set(qn(f"w:{attr}"), "TH SarabunIT๙")
+        # ตั้ง CS size ด้วย (Thai รัน complex script)
+        szCs = rPr.find(qn("w:szCs"))
+        if szCs is None:
+            szCs = OxmlElement("w:szCs")
+            rPr.append(szCs)
+        szCs.set(qn("w:val"), "32")  # 32 half-points = 16pt
         if i < len(lines) - 1:
             run.add_break()
 
@@ -453,6 +480,17 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
     # 6. รูปภาพ — ลบ placeholder ใน template แล้วใส่รูปจริง
     heading_para = next((p for p in doc.paragraphs if "รูปภาพประกอบ" in p.text), None)
     if heading_para:
+        # บังคับ font ของ "รูปภาพประกอบ" เป็น TH SarabunIT๙
+        for run in heading_para.runs:
+            run.font.name = "TH SarabunIT๙"
+            rPr = run._r.get_or_add_rPr()
+            rFonts = rPr.find(qn("w:rFonts"))
+            if rFonts is None:
+                from docx.oxml import OxmlElement
+                rFonts = OxmlElement("w:rFonts")
+                rPr.append(rFonts)
+            for attr in ("ascii", "hAnsi", "cs"):
+                rFonts.set(qn(f"w:{attr}"), "TH SarabunIT๙")
         heading_elem = heading_para._element
         found = False
         to_delete = []
@@ -469,7 +507,8 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
         for img_info in images:
             url = img_info.get("url") or img_info.get("image_url")
             acts_text = clean_caption(img_info.get("caption") or "")
-            caption = f"วันที่ {thai_date(d)}"
+            # ใช้เลขไทยสำหรับวันที่
+            caption = f"วันที่ {thai_date_th_digits(d)}"
             if acts_text:
                 caption += f"\n{acts_text}"
             if not url:
