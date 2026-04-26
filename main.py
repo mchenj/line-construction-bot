@@ -4,6 +4,8 @@ LINE Construction Report Bot - v4
 """
 
 import os, json, re, hmac, hashlib, base64, httpx, calendar
+from contextlib import asynccontextmanager
+from pathlib import Path
 from datetime import datetime, date, timedelta, timezone
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -16,6 +18,18 @@ try:
 except ImportError:
     _PDF_AVAILABLE = False
     generate_weekly_phase1_pdf = None
+try:
+    from scheduler import start_scheduler, stop_scheduler
+    _SCHEDULER_AVAILABLE = True
+except ImportError:
+    _SCHEDULER_AVAILABLE = False
+    start_scheduler = stop_scheduler = lambda: None
+try:
+    from admin import router as admin_router
+    _ADMIN_AVAILABLE = True
+except ImportError:
+    _ADMIN_AVAILABLE = False
+    admin_router = None
 
 LINE_CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -31,8 +45,31 @@ LINE_REPLY_URL   = "https://api.line.me/v2/bot/message/reply"
 LINE_PUSH_URL    = "https://api.line.me/v2/bot/message/push"
 LINE_CONTENT_URL = "https://api-data.line.me/v2/bot/message/{msg_id}/content"
 
-app = FastAPI(title="LINE Construction Report Bot", version="4.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: เริ่ม scheduler ถ้าเปิดไว้
+    if _SCHEDULER_AVAILABLE:
+        try:
+            start_scheduler()
+        except Exception as e:
+            print(f"⚠️ scheduler start failed: {e}")
+    yield
+    # Shutdown
+    if _SCHEDULER_AVAILABLE:
+        try:
+            stop_scheduler()
+        except Exception:
+            pass
+
+
+app = FastAPI(title="LINE Construction Report Bot", version="4.1.0", lifespan=lifespan)
+if _ADMIN_AVAILABLE:
+    app.include_router(admin_router)
 last_text_by_user: dict[str, dict] = {}
+# state สำหรับ /upload_plan และ /upload_cm — {user_id: ("plan"|"cm", expires_datetime)}
+upload_intent: dict[str, tuple] = {}
+DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
 
 THAI_MONTHS = {
     "มกราคม":"01","ม.ค.":"01","กุมภาพันธ์":"02","ก.พ.":"02",
@@ -622,6 +659,11 @@ def _help_text():
         "/weekly2 3/04   → สัปดาห์ที่ 3 เม.ย. (16-23)\n"
         "/weekly2 23-25/04 → ช่วง 23-25 เม.ย. ⭐\n"
         "/weekly2pdf 23-25/04 → ฉบับเต็มรวม PDF เดียว ⭐\n"
+        "━━━━━━━━━━━━━━━\n"
+        "📤 อัปโหลดข้อมูลรายสัปดาห์/รายเดือน:\n"
+        "/upload_plan    → อัปโหลด แผนงานก่อสร้าง .xlsx\n"
+        "/upload_cm      → อัปโหลด บุคลากร CM .xlsx\n"
+        "(พิมพ์คำสั่ง แล้วส่งไฟล์ภายใน 10 นาที)\n"
         "/monthly        → รายงานเดือนนี้\n"
         "━━━━━━━━━━━━━━━\n"
         "🌊 บันทึกระดับน้ำ (พิมพ์ตัวเลขอย่างเดียว):\n"
@@ -769,6 +811,16 @@ async def handle_command(cmd, reply_token, user_id):
                 fn = f"Weekly_Report_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.pdf"
             except Exception as e:
                 await reply_to_line(reply_token, f"❌ สร้าง PDF ไม่สำเร็จ: {e}\n(ลองใช้ /weekly2 แทน)"); return
+        elif command in ("/upload_plan", "/upload_cm"):
+            kind = "plan" if command == "/upload_plan" else "cm"
+            label = "แผนงานก่อสร้าง" if kind == "plan" else "บุคลากร CM"
+            upload_intent[user_id] = (kind, datetime.now(timezone.utc) + timedelta(minutes=10))
+            await reply_to_line(reply_token,
+                f"📤 พร้อมรับไฟล์ {label}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"กรุณาส่งไฟล์ .xlsx ภายใน 10 นาที\n"
+                f"(ไฟล์เก่าจะถูก backup อัตโนมัติ)")
+            return
         elif command == "/monthly":
             ms = arg or date.today().strftime("%Y-%m")
             dl = get_month_daily_list(ms)
@@ -899,7 +951,73 @@ async def webhook(request: Request):
             except Exception as e:
                 print(f"❌ img: {e}"); await reply_to_line(reply_token,"❌ บันทึกรูปไม่ได้ กรุณาส่งใหม่")
 
+        elif msg_type == "file":
+            # ไฟล์ทั่วไป (.xlsx, .pdf etc.) — ใช้สำหรับ /upload_plan และ /upload_cm
+            message_id = msg.get("id", "")
+            file_name = msg.get("fileName", "")
+            await handle_file_upload(reply_token, user_id, message_id, file_name)
+
     return {"status":"ok"}
+
+
+async def handle_file_upload(reply_token: str, user_id: str, message_id: str, file_name: str):
+    """รับไฟล์จาก LINE → ตัดสินใจจาก state (upload_intent) หรือ filename auto-detect"""
+    # 1) ตรวจ extension
+    if not file_name.lower().endswith(".xlsx"):
+        await reply_to_line(reply_token,
+            f"⚠️ รองรับเฉพาะ .xlsx เท่านั้น (ได้รับ: {file_name})")
+        return
+
+    # 2) ตัดสินใจ kind: ดูใน upload_intent ก่อน → fallback auto-detect จากชื่อไฟล์
+    kind = None
+    intent = upload_intent.get(user_id)
+    if intent:
+        k, expires = intent
+        if datetime.now(timezone.utc) < expires:
+            kind = k
+        upload_intent.pop(user_id, None)  # ใช้ครั้งเดียว
+
+    if kind is None:
+        fn_lower = file_name.lower()
+        if "แผน" in file_name or "plan" in fn_lower:
+            kind = "plan"
+        elif "บุคลากร" in file_name or "mm5" in fn_lower or "cm" in fn_lower or "personnel" in fn_lower:
+            kind = "cm"
+
+    if kind is None:
+        await reply_to_line(reply_token,
+            f"📎 ได้รับไฟล์ {file_name}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"ไม่แน่ใจว่าจะบันทึกเป็นไฟล์ไหน\n"
+            f"กรุณาพิมพ์ /upload_plan หรือ /upload_cm ก่อนส่งไฟล์")
+        return
+
+    # 3) Download จาก LINE Content API
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.get(LINE_CONTENT_URL.format(msg_id=message_id),
+                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"})
+            r.raise_for_status()
+            content = r.content
+    except Exception as e:
+        await reply_to_line(reply_token, f"❌ ดาวน์โหลดไฟล์ไม่สำเร็จ: {e}")
+        return
+
+    # 4) Save ทับไฟล์เดิม + backup
+    target_name = "construction_plan.xlsx" if kind == "plan" else "cm_personnel.xlsx"
+    label = "แผนงานก่อสร้าง" if kind == "plan" else "บุคลากร CM"
+    target = DATA_DIR / target_name
+    if target.exists():
+        backup = target.with_suffix(f".{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak.xlsx")
+        target.rename(backup)
+    target.write_bytes(content)
+
+    await reply_to_line(reply_token,
+        f"✅ บันทึก {label} สำเร็จ\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📄 {file_name} ({len(content)/1024:.1f} KB)\n"
+        f"💾 → data/{target_name}\n"
+        f"ใช้คำสั่ง /weekly2 เพื่อสร้างรายงานด้วยข้อมูลใหม่")
 
 
 @app.get("/reports")
