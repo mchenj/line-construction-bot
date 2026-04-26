@@ -1,0 +1,6 @@
+# Nixpacks config — install LibreOffice for PDF conversion
+[phases.setup]
+aptPkgs = ["libreoffice", "libreoffice-writer", "libreoffice-impress", "fonts-thai-tlwg"]
+
+[start]
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"

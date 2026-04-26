@@ -9,6 +9,13 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from supabase import create_client, Client
 from report_generator import generate_daily, generate_weekly, generate_monthly
+from weekly_phase1 import generate_weekly_phase1
+try:
+    from pdf_merger import generate_weekly_phase1_pdf
+    _PDF_AVAILABLE = True
+except ImportError:
+    _PDF_AVAILABLE = False
+    generate_weekly_phase1_pdf = None
 
 LINE_CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -267,13 +274,24 @@ async def reply_to_line(reply_token, text):
             json={"replyToken":reply_token,"messages":[{"type":"text","text":text}]})
 
 
+_CONTENT_TYPE_MAP = {
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pdf":  "application/pdf",
+    ".zip":  "application/zip",
+}
+
 async def push_file_to_line(user_id, filename, file_bytes):
     try:
         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = f"reports/{ts}_{filename}"
+        # ตรวจ content-type จากนามสกุลไฟล์ (default = docx)
+        ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        content_type = _CONTENT_TYPE_MAP.get(ext, _CONTENT_TYPE_MAP[".docx"])
         if supabase:
             supabase.storage.from_("construction-images").upload(path, file_bytes,
-                file_options={"content-type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document"})
+                file_options={"content-type": content_type})
             url = supabase.storage.from_("construction-images").get_public_url(path)
             async with httpx.AsyncClient(timeout=10) as c:
                 await c.post(LINE_PUSH_URL,
@@ -545,9 +563,11 @@ def _help_text():
         "📋 คำสั่งสร้างรายงาน:\n"
         "/daily          → รายงานวันนี้\n"
         "/daily 23/04    → รายงานวันที่ 23 เม.ย.\n"
-        "/weekly         → รายงานสัปดาห์ปัจจุบัน\n"
+        "/weekly         → รายงานสัปดาห์ปัจจุบัน (เก่า)\n"
         "/weekly 2       → รายงานสัปดาห์ที่ 2 เดือนนี้\n"
-        "/weekly 2/04    → สัปดาห์ที่ 2 เดือนเม.ย.\n"
+        "/weekly2        → รายงานสัปดาห์ฉบับเต็ม (ZIP) ⭐\n"
+        "/weekly2 85     → สัปดาห์ที่ 85 (ฉบับเต็ม)\n"
+        "/weekly2pdf 85  → ฉบับเต็มรวม PDF เดียว ⭐\n"
         "/monthly        → รายงานเดือนนี้\n"
         "━━━━━━━━━━━━━━━\n"
         "🌊 บันทึกระดับน้ำ (พิมพ์ตัวเลขอย่างเดียว):\n"
@@ -637,6 +657,39 @@ async def handle_command(cmd, reply_token, user_id):
             if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในสัปดาห์นี้"); return
             fb = await generate_weekly(str(ws), dl, PROJECT_NAME, week_no=wk, week_end=str(we))
             fn = f"Weekly_Report_{yr}-{mo:02d}_W{wk}.docx"
+        elif command == "/weekly2":
+            # ใหม่: ใช้ template บริษัทจริง → ZIP รวม cover/TOC/รายละเอียด/ภาพถ่าย/รายงานประจำวัน 8 ใบ
+            parsed_w = parse_weekly_arg(arg)
+            if not parsed_w:
+                await reply_to_line(reply_token,
+                    "❌ รูปแบบไม่ถูกต้อง\nตัวอย่าง:\n/weekly2       → สัปดาห์ปัจจุบัน\n/weekly2 85    → สัปดาห์ที่ 85 เดือนนี้\n/weekly2 85/03 → สัปดาห์ที่ 85 เดือน มี.ค.")
+                return
+            wk, yr, mo = parsed_w
+            ws, we = get_week_range(wk, yr, mo)
+            dl = get_week_daily_list(str(ws), str(we))
+            if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในสัปดาห์นี้"); return
+            fb = await generate_weekly_phase1(week_no=wk, week_start=str(ws),
+                                              daily_list=dl, project_name=PROJECT_NAME)
+            fn = f"Weekly_Report_W{wk}_{yr}-{mo:02d}.zip"
+        elif command == "/weekly2pdf":
+            # ใหม่: generate weekly + รวมเป็น PDF เดียว (ต้องมี LibreOffice)
+            if not _PDF_AVAILABLE:
+                await reply_to_line(reply_token, "❌ PDF merger ไม่พร้อมใช้งาน (ต้องติดตั้ง LibreOffice + pypdf)"); return
+            parsed_w = parse_weekly_arg(arg)
+            if not parsed_w:
+                await reply_to_line(reply_token,
+                    "❌ รูปแบบไม่ถูกต้อง\nตัวอย่าง:\n/weekly2pdf       → สัปดาห์ปัจจุบัน (PDF)\n/weekly2pdf 85    → สัปดาห์ที่ 85 (PDF)")
+                return
+            wk, yr, mo = parsed_w
+            ws, we = get_week_range(wk, yr, mo)
+            dl = get_week_daily_list(str(ws), str(we))
+            if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในสัปดาห์นี้"); return
+            try:
+                fb = await generate_weekly_phase1_pdf(week_no=wk, week_start=str(ws),
+                                                      daily_list=dl, project_name=PROJECT_NAME)
+                fn = f"Weekly_Report_W{wk}_{yr}-{mo:02d}.pdf"
+            except Exception as e:
+                await reply_to_line(reply_token, f"❌ สร้าง PDF ไม่สำเร็จ: {e}\n(ลองใช้ /weekly2 แทน)"); return
         elif command == "/monthly":
             ms = arg or date.today().strftime("%Y-%m")
             dl = get_month_daily_list(ms)
