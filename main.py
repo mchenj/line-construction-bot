@@ -778,9 +778,18 @@ async def handle_command(cmd, reply_token, user_id):
             dl = get_week_daily_list(str(ws), str(we))
             if not dl: await reply_to_line(reply_token,
                 f"❌ ไม่พบข้อมูลในช่วง {ws} ถึง {we}"); return
+            # ลอง lookup week_no จริงจาก construction_plan.xlsx
+            try:
+                from weekly_phase3 import lookup_week_number
+                actual_wk = lookup_week_number(ws, we)
+                if actual_wk:
+                    wk = actual_wk
+            except Exception as e:
+                print(f"⚠️ lookup_week_number: {e}")
             fb = await generate_weekly_phase1(week_no=wk, week_start=str(ws),
+                                              week_end=str(we),
                                               daily_list=dl, project_name=PROJECT_NAME)
-            fn = f"Weekly_Report_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.zip"
+            fn = f"Weekly_Report_W{wk}_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.zip"
         elif command == "/weekly2pdf":
             # ใหม่: generate weekly + รวมเป็น PDF เดียว (ต้องมี LibreOffice)
             if not _PDF_AVAILABLE:
@@ -805,10 +814,19 @@ async def handle_command(cmd, reply_token, user_id):
             dl = get_week_daily_list(str(ws), str(we))
             if not dl: await reply_to_line(reply_token,
                 f"❌ ไม่พบข้อมูลในช่วง {ws} ถึง {we}"); return
+            # lookup week_no จริงจาก Excel
+            try:
+                from weekly_phase3 import lookup_week_number
+                actual_wk = lookup_week_number(ws, we)
+                if actual_wk:
+                    wk = actual_wk
+            except Exception as e:
+                print(f"⚠️ lookup_week_number: {e}")
             try:
                 fb = await generate_weekly_phase1_pdf(week_no=wk, week_start=str(ws),
-                                                      daily_list=dl, project_name=PROJECT_NAME)
-                fn = f"Weekly_Report_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.pdf"
+                                                      daily_list=dl, project_name=PROJECT_NAME,
+                                                      week_end=str(we))
+                fn = f"Weekly_Report_W{wk}_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.pdf"
             except Exception as e:
                 await reply_to_line(reply_token, f"❌ สร้าง PDF ไม่สำเร็จ: {e}\n(ลองใช้ /weekly2 แทน)"); return
         elif command in ("/upload_plan", "/upload_cm"):

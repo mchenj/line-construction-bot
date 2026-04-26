@@ -111,8 +111,10 @@ def zip_to_pdf(zip_bytes: bytes, file_order: List[str] = None) -> bytes:
 
 async def generate_weekly_phase1_pdf(week_no: int, week_start: str,
                                      daily_list: list,
-                                     project_name: str = "โครงการก่อสร้าง") -> bytes:
+                                     project_name: str = "โครงการก่อสร้าง",
+                                     week_end: str = None) -> bytes:
     """ครบทุกอย่าง: generate weekly + รวมเป็น PDF เดียว"""
     from weekly_phase1 import generate_weekly_phase1
-    zip_bytes = await generate_weekly_phase1(week_no, week_start, daily_list, project_name)
+    zip_bytes = await generate_weekly_phase1(week_no, week_start, daily_list,
+                                             project_name, week_end=week_end)
     return zip_to_pdf(zip_bytes)

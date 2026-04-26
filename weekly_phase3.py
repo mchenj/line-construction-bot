@@ -42,6 +42,39 @@ _MONTH_SHEET_MAP = {
 # Read: ผลการดำเนินงาน (ผลweekly sheet)
 # ════════════════════════════════════════
 
+def lookup_week_number(start_date: date, end_date: date) -> Optional[int]:
+    """หา week_no จริงจาก sheet 'แผน - ผล ประจำสัปดาห์' โดยจับคู่ from_date + to_date
+    คืน int week_no หรือ None ถ้าไม่พบ
+    """
+    if not os.path.exists(DATA_PLAN):
+        return None
+    try:
+        wb = openpyxl.load_workbook(DATA_PLAN, data_only=True)
+        if "แผน - ผล ประจำสัปดาห์" not in wb.sheetnames:
+            return None
+        ws = wb["แผน - ผล ประจำสัปดาห์"]
+        # cols: D(4)=from_date, E(5)=to_date, F(6)=week_no
+        from datetime import datetime as _dt
+        for r in ws.iter_rows(min_row=5, values_only=True):
+            if len(r) < 6:
+                continue
+            d_from = r[3]; d_to = r[4]; wk = r[5]
+            if isinstance(d_from, _dt) and isinstance(d_to, _dt):
+                if d_from.date() == start_date and d_to.date() == end_date:
+                    return int(wk) if wk is not None else None
+        # ถ้าไม่ exact match ลอง fallback: หา row ที่ start_date อยู่ในช่วง [from, to]
+        for r in ws.iter_rows(min_row=5, values_only=True):
+            if len(r) < 6:
+                continue
+            d_from = r[3]; d_to = r[4]; wk = r[5]
+            if isinstance(d_from, _dt) and isinstance(d_to, _dt):
+                if d_from.date() <= start_date <= d_to.date():
+                    return int(wk) if wk is not None else None
+    except Exception as e:
+        print(f"⚠️ lookup_week_number failed: {e}")
+    return None
+
+
 def read_progress_detail() -> list:
     """อ่าน sheet 'ผลweekly' → list ของ row dict
     คืน: [{"no": "1.1", "name": "...", "share": 2.134, "prev_cum": 0.15, "this_cum": 0.15, "note": ""}, ...]
@@ -166,42 +199,46 @@ def fill_progress_summary_table(table, summary_rows: list):
     _set_cell(last.cells[5], "")
 
 
+def _is_category_row(no: str) -> bool:
+    """row ที่ no เป็นเลขเดียว เช่น "1", "2" → category header"""
+    return no.isdigit() and "." not in no
+
+
 def fill_progress_detail_table(table, detail_rows: list):
     """เติม Table 1 (สรุปผลการดำเนินงานละเอียด) — 55 rows × 6 cols
-    rows[0-1]: header
-    rows[2-53]: data
-    rows[54]: รวม (sum)
+    Row[0-1]: header (skip)
+    Row[2]: category template (มีสีพื้น C0E6F5) — ใช้สำหรับ category rows (1, 2, 3, ...)
+    Row[3+]: data template (ไม่มีสีพื้น) — ใช้สำหรับ sub-rows (1.1, 1.2, (1), (2), ...)
+    Last row: รวม template
     """
-    # ลบ data rows เก่า เก็บ header 2 rows + 1 template row + รวม row
-    # ที่จริงเราจะ rebuild rows 2 ขึ้นไป แต่เก็บ template formatting จาก row[2]
-    if len(table.rows) < 4:
+    if len(table.rows) < 5:
         return
-    template_row = deepcopy(table.rows[2]._tr)
-    sum_row = deepcopy(table.rows[-1]._tr)
+    category_tpl = deepcopy(table.rows[2]._tr)  # category row (with shading)
+    data_tpl     = deepcopy(table.rows[3]._tr)  # data row (no shading)
+    sum_tpl      = deepcopy(table.rows[-1]._tr)
 
-    # ลบ rows ตั้งแต่ index 2 เป็นต้นไป
+    # ลบ rows 2..end (เก็บแค่ 2 header rows)
     while len(table.rows) > 2:
-        last = table.rows[-1]
-        last._element.getparent().remove(last._element)
+        table.rows[-1]._element.getparent().remove(table.rows[-1]._element)
 
-    # เติม data rows + รวม row
     sum_share = sum_prev = sum_this = 0.0
     sum_row_data = None
     for d in detail_rows:
-        # ถ้าเป็น row "รวม" ให้ใช้ sum_row template
         if "รวม" in d["name"]:
             sum_row_data = d
             continue
-        new_tr = deepcopy(template_row)
+        # เลือก template ตาม row type
+        is_cat = _is_category_row(d["no"])
+        new_tr = deepcopy(category_tpl if is_cat else data_tpl)
         table._tbl.append(new_tr)
         new_row = table.rows[-1]
-        _set_cell(new_row.cells[0], d["no"])
-        _set_cell(new_row.cells[1], d["name"], center=False)
-        _set_cell(new_row.cells[2], _fmt_pct(d["share"], 3) if d["share"] is not None else "")
-        _set_cell(new_row.cells[3], _fmt_pct(d["prev_cum"]) if d["prev_cum"] is not None else "")
-        _set_cell(new_row.cells[4], _fmt_pct(d["this_cum"]) if d["this_cum"] is not None else "")
-        _set_cell(new_row.cells[5], d.get("note", ""))
-        # accumulate top-level subtotals (x.y where y is single digit, no parens)
+        _set_cell(new_row.cells[0], d["no"], bold=is_cat)
+        _set_cell(new_row.cells[1], d["name"], center=False, bold=is_cat)
+        _set_cell(new_row.cells[2], _fmt_pct(d["share"], 3) if d["share"] is not None else "", bold=is_cat)
+        _set_cell(new_row.cells[3], _fmt_pct(d["prev_cum"]) if d["prev_cum"] is not None else "", bold=is_cat)
+        _set_cell(new_row.cells[4], _fmt_pct(d["this_cum"]) if d["this_cum"] is not None else "", bold=is_cat)
+        _set_cell(new_row.cells[5], d.get("note", ""), bold=is_cat)
+        # accumulate top-level x.y subtotals
         no = d["no"]
         if "." in no and "(" not in no:
             parts = no.split(".")
@@ -211,7 +248,7 @@ def fill_progress_detail_table(table, detail_rows: list):
                 if d["this_cum"]: sum_this  += d["this_cum"]
 
     # สรุปสุดท้าย "รวม" row
-    new_tr = deepcopy(sum_row)
+    new_tr = deepcopy(sum_tpl)
     table._tbl.append(new_tr)
     new_row = table.rows[-1]
     _set_cell(new_row.cells[0], "", bold=True)

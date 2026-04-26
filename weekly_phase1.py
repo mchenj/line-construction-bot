@@ -517,8 +517,49 @@ def fill_toc(doc, week_no: int, year_th: int):
 # Main: generate Phase 1 weekly report
 # ════════════════════════════════════════
 
+def fill_template_captions(doc, week_no: int, ws_date: date, we_date: date):
+    """แก้ caption "สัปดาห์ที่ XX/YYYY ระหว่างวันที่ DD - DD เดือน YYYY" และ
+    "ประจำวันที่ DD - DD เดือน YYYY" ใน 04_project_details.docx
+    """
+    year_th = ws_date.year + 543
+    # ถ้าข้ามเดือน ใช้ "16 มี.ค. - 23 เม.ย." style
+    if ws_date.month == we_date.month:
+        date_str = f"{ws_date.day} – {we_date.day} {THAI_MONTHS_FULL[we_date.month]} {year_th}"
+    else:
+        date_str = (f"{ws_date.day} {THAI_MONTHS_FULL[ws_date.month]} – "
+                    f"{we_date.day} {THAI_MONTHS_FULL[we_date.month]} {year_th}")
+    new_full = f"สัปดาห์ที่ {week_no}/{year_th} ระหว่างวันที่ {date_str}"
+    new_short = f"ผลการดำเนินงานก่อสร้างประจำวันที่ {date_str}"
+
+    # 1) update paragraphs in body
+    for p in doc.paragraphs:
+        text = p.text
+        if "สัปดาห์ที่" in text and "ระหว่างวันที่" in text:
+            _replace_para_text_keep_format(p, new_full)
+        elif "ผลการดำเนินงานก่อสร้างประจำวันที่" in text:
+            _replace_para_text_keep_format(p, new_short)
+
+    # 2) update Table[2] R0 caption (merged across cols) — ภาคผนวก 4 personnel header
+    if len(doc.tables) > 2:
+        tbl2 = doc.tables[2]
+        if len(tbl2.rows) > 0:
+            r0 = tbl2.rows[0]
+            for cell in r0.cells:
+                if "สัปดาห์ที่" in cell.text and "ระหว่างวันที่" in cell.text:
+                    # rebuild cell content
+                    p = cell.paragraphs[0]
+                    for old_p in cell.paragraphs[1:]:
+                        old_p._element.getparent().remove(old_p._element)
+                    if p.runs:
+                        p.runs[0].text = new_full
+                        for r in p.runs[1:]:
+                            r._element.getparent().remove(r._element)
+                    break  # merged cells share content; update once is enough
+
+
 async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list,
-                                 project_name: str = "โครงการก่อสร้าง") -> bytes:
+                                 project_name: str = "โครงการก่อสร้าง",
+                                 week_end: str = None) -> bytes:
     """
     Generate Phase 1 weekly report files และ pack เป็น ZIP
 
@@ -537,7 +578,12 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
     from report_generator import generate_daily
 
     ws = date.fromisoformat(week_start)
-    we = ws + timedelta(days=len(daily_list) - 1)
+    if week_end:
+        we = date.fromisoformat(week_end)
+    elif daily_list:
+        we = ws + timedelta(days=len(daily_list) - 1)
+    else:
+        we = ws + timedelta(days=7)
 
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -587,6 +633,8 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
                         fill_progress_detail_table(tables[1], detail)
             except Exception as e:
                 print(f"⚠️ Phase 3 progress fill skipped: {e}")
+            # อัปเดต captions ในเทมเพลต (page 9, 10, 14) ให้ตรงกับ week_no + ช่วงวันที่ใหม่
+            fill_template_captions(doc, week_no, ws, we)
             # บังคับให้หัวข้อ "บันทึกการปฏิบัติงานผู้รับจ้าง" (ก่อน table 3) ขึ้นหน้าใหม่เสมอ
             force_page_break_before_heading(doc, "บันทึกการปฏิบัติงานผู้รับจ้าง",
                                             exclude_keyword="ของ")
