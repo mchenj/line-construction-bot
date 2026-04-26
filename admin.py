@@ -171,3 +171,31 @@ async def admin_trigger_weekly(token: str = ""):
         return JSONResponse({"status": "ok", "message": "Weekly report triggered — check LINE"})
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+@router.get("/check_fonts")
+async def admin_check_fonts(token: str = ""):
+    """ตรวจดูว่า Thai fonts ติดตั้งครบไหมบน server (สำหรับ debug PDF rendering)"""
+    _check_token(token)
+    import subprocess
+    result = {"thai_fonts": [], "soffice": "not_found", "errors": []}
+    # 1) check fonts via fc-list
+    try:
+        r = subprocess.run(["fc-list", ":lang=th"], capture_output=True, timeout=10)
+        if r.returncode == 0:
+            lines = r.stdout.decode("utf-8", errors="ignore").splitlines()
+            result["thai_fonts"] = sorted(set(line.split(":")[1].strip() for line in lines if ":" in line))
+        else:
+            result["errors"].append(f"fc-list failed: {r.stderr.decode()[:200]}")
+    except Exception as e:
+        result["errors"].append(f"fc-list error: {e}")
+    # 2) check soffice
+    for c in ("soffice", "libreoffice", "/usr/bin/soffice"):
+        try:
+            r = subprocess.run([c, "--version"], capture_output=True, timeout=10)
+            if r.returncode == 0:
+                result["soffice"] = r.stdout.decode("utf-8", errors="ignore").strip()
+                break
+        except Exception:
+            continue
+    return JSONResponse(result)

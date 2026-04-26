@@ -1,6 +1,25 @@
-# Nixpacks config — install LibreOffice for PDF conversion
+# Nixpacks config — ติดตั้ง LibreOffice + ฟอนต์ Thai (รวม custom fonts จาก fonts/)
 [phases.setup]
-aptPkgs = ["libreoffice", "libreoffice-writer", "libreoffice-impress", "fonts-thai-tlwg"]
+aptPkgs = [
+  # LibreOffice headless
+  "libreoffice",
+  "libreoffice-writer",
+  "libreoffice-impress",
+  "libreoffice-calc",
+  # ฟอนต์ Thai พื้นฐาน (สำหรับ system fallback)
+  "fonts-thai-tlwg",
+  # Font cache management
+  "fontconfig",
+]
+
+[phases.build]
+cmds = [
+  # Copy custom fonts (TH SarabunIT๙ etc.) จาก fonts/ ของ repo → /usr/share/fonts
+  "mkdir -p /usr/share/fonts/truetype/custom",
+  "if [ -d fonts ] && [ \"$(ls -A fonts/*.ttf 2>/dev/null)\" ]; then cp -v fonts/*.ttf /usr/share/fonts/truetype/custom/; fi",
+  # Rebuild font cache → LibreOffice จะเห็นฟอนต์ใหม่
+  "fc-cache -f -v",
+]
 
 [start]
 cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"

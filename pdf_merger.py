@@ -33,7 +33,7 @@ def _find_soffice() -> str:
 
 
 def docx_pptx_to_pdf(input_path: str, output_dir: str) -> str:
-    """แปลง DOCX/PPTX → PDF ผ่าน LibreOffice headless
+    """แปลง DOCX/PPTX → PDF ผ่าน LibreOffice headless (ใช้ font ตามที่กำหนดใน docx)
     คืนค่า path ของ PDF ที่ได้
     """
     soffice = _find_soffice()
