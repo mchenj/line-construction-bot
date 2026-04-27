@@ -376,22 +376,31 @@ def fill_appendix4_xlsx(template_path: str, week_no: int,
     ws.cell(5, 5).value = title
 
     # update day numbers row 6: cols E..L (5..12)
+    # template มี formula =E6+1, =F6+1, ... ใน F6..L6 → ถ้าไม่เคลียร์
+    # คอลัมน์ที่เกินช่วงสัปดาห์จะแสดงวันที่ผิด (เช่น 24-30 เม.ย. แต่ขึ้น "31")
     n_days = (end_date - start_date).days + 1
-    for i in range(min(n_days, 8)):
+    n_cols_used = min(n_days, 8)
+    for i in range(n_cols_used):
         day = (start_date + timedelta(days=i)).day
         ws.cell(6, 5 + i).value = day
+    # เคลียร์คอลัมน์วันที่ส่วนเกิน (ทับ formula =X+1) + ทุก row ที่เกี่ยวข้อง
+    for i in range(n_cols_used, 8):
+        col = 5 + i
+        ws.cell(6, col).value = None
+        for r in range(7, 17):  # rows 7-15 personnel + row 16 total
+            ws.cell(r, col).value = None
 
     # fill personnel data rows 7-15
     personnel = cm_data.get("personnel", [])
     for pi, p in enumerate(personnel[:9]):
         row_idx = 7 + pi
-        for di in range(min(n_days, 8)):
+        for di in range(n_cols_used):
             v = p["attendance"][di] if di < len(p["attendance"]) else "-"
             ws.cell(row_idx, 5 + di).value = v
 
     # totals row 16
     totals = cm_data.get("totals", [])
-    for di in range(min(n_days, 8)):
+    for di in range(n_cols_used):
         ws.cell(16, 5 + di).value = totals[di] if di < len(totals) else 0
 
     # ━━━━━━ บังคับให้ตารางพอดี 1 หน้ากระดาษ A4 แนวนอน ━━━━━━
@@ -403,14 +412,15 @@ def fill_appendix4_xlsx(template_path: str, week_no: int,
     # แทน fitToPage ทำให้ตารางล้นหน้า
     ws.page_setup.scale = None
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    # ตั้ง print area เฉพาะข้อมูลจริง (B2:..19) — ตัด row 1 และ col M ที่ว่าง
-    last_col = openpyxl.utils.get_column_letter(min(5 + max(n_days, 8) - 1, ws.max_column))
+    # ตั้ง print area เฉพาะข้อมูลจริง (B2:..19) — ตัด row 1, col M ที่ว่าง
+    # และคอลัมน์วันที่ที่ไม่ได้ใช้ (เช่น 24-30 เม.ย. = 7 วัน → ตัด col L)
+    last_col_idx = 5 + n_cols_used - 1
+    last_col = openpyxl.utils.get_column_letter(last_col_idx)
     ws.print_area = f"B2:{last_col}19"
     # ใส่ page break ที่แถว 20 และคอลัมน์ถัดจาก last_col เพื่อกันส่วนว่างหลุดเป็นหน้าใหม่
     from openpyxl.worksheet.pagebreak import Break
     ws.row_breaks.append(Break(id=19))
-    next_col_idx = min(5 + max(n_days, 8), ws.max_column)
-    ws.col_breaks.append(Break(id=next_col_idx))
+    ws.col_breaks.append(Break(id=last_col_idx + 1))
     # margins แคบลงเพื่อให้พื้นที่พิมพ์เยอะขึ้น
     ws.page_margins.left = 0.3
     ws.page_margins.right = 0.3
