@@ -657,7 +657,8 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
             try:
                 wd = daily.get("work_date")
                 d = date.fromisoformat(wd)
-                fb = await generate_daily(wd, daily, project_name)
+                # ไม่แนบรูปในรายงานประจำวัน — มีภาคผนวก 1 ภาพถ่ายแยกแล้ว
+                fb = await generate_daily(wd, daily, project_name, include_images=False)
                 fname = f"04_ภาคผนวก_3_รายงานประจำวัน_{d.strftime('%Y%m%d')}.docx"
                 zf.writestr(fname, fb)
             except Exception as e:

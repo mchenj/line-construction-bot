@@ -427,7 +427,8 @@ def _tpl_fill_equipment(paras, daily_data):
 # DAILY REPORT
 # ════════════════════════════════════════
 
-async def generate_daily(work_date: str, daily_data: dict, project_name: str = "โครงการก่อสร้าง") -> bytes:
+async def generate_daily(work_date: str, daily_data: dict, project_name: str = "โครงการก่อสร้าง",
+                         include_images: bool = True) -> bytes:
     doc = Document(TEMPLATE_DAILY)
     paras = doc.paragraphs
     d = date.fromisoformat(work_date)
@@ -478,6 +479,7 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
     _tpl_fill_equipment(paras, daily_data)
 
     # 6. รูปภาพ — ลบ placeholder ใน template แล้วใส่รูปจริง
+    # (include_images=False → ใช้ตอน embed ใน weekly report เพราะมีภาคผนวก 1 ภาพถ่ายแยกอยู่แล้ว)
     heading_para = next((p for p in doc.paragraphs if "รูปภาพประกอบ" in p.text), None)
     if heading_para:
         # บังคับ font ของ "รูปภาพประกอบ" เป็น TH SarabunIT๙
@@ -501,9 +503,12 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
                 found = True
         for p in to_delete:
             _tpl_delete_para(p)
+        # ถ้าไม่ต้องการรูป → ลบหัวข้อ "รูปภาพประกอบ" ทิ้งด้วย
+        if not include_images:
+            _tpl_delete_para(heading_para)
 
     images = daily_data.get("images") or []
-    if images:
+    if include_images and images:
         for img_info in images:
             url = img_info.get("url") or img_info.get("image_url")
             acts_text = clean_caption(img_info.get("caption") or "")
