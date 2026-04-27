@@ -399,10 +399,18 @@ def fill_appendix4_xlsx(template_path: str, week_no: int,
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
+    # เคลียร์ scale ที่ template ฝังไว้ (เช่น 88) เพราะ LibreOffice อาจใช้ scale
+    # แทน fitToPage ทำให้ตารางล้นหน้า
+    ws.page_setup.scale = None
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    # ตั้ง print area ให้ครอบคลุมข้อมูลทั้งหมด (B1:L19)
+    # ตั้ง print area เฉพาะข้อมูลจริง (B2:..19) — ตัด row 1 และ col M ที่ว่าง
     last_col = openpyxl.utils.get_column_letter(min(5 + max(n_days, 8) - 1, ws.max_column))
-    ws.print_area = f"B1:{last_col}19"
+    ws.print_area = f"B2:{last_col}19"
+    # ใส่ page break ที่แถว 20 และคอลัมน์ถัดจาก last_col เพื่อกันส่วนว่างหลุดเป็นหน้าใหม่
+    from openpyxl.worksheet.pagebreak import Break
+    ws.row_breaks.append(Break(id=19))
+    next_col_idx = min(5 + max(n_days, 8), ws.max_column)
+    ws.col_breaks.append(Break(id=next_col_idx))
     # margins แคบลงเพื่อให้พื้นที่พิมพ์เยอะขึ้น
     ws.page_margins.left = 0.3
     ws.page_margins.right = 0.3
@@ -412,6 +420,7 @@ def fill_appendix4_xlsx(template_path: str, week_no: int,
     ws.page_margins.footer = 0.2
     # จัดกลางหน้ากระดาษ
     ws.print_options.horizontalCentered = True
+    ws.print_options.verticalCentered = True
 
     buf = io.BytesIO()
     wb.save(buf)
