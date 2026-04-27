@@ -418,6 +418,12 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
             if url:
                 photos.append((url, cap, d))
 
+    # ใช้ clean_caption เหมือน daily — ตัด "วันที่ ... อากาศ ..."/กำลังพล/เครื่องจักรออก
+    try:
+        from report_generator import clean_caption
+    except Exception:
+        def clean_caption(t): return t or ""
+
     # เติมรูปทีละใบ (full width 5 นิ้ว) + caption — แบบเดียวกับ daily
     for url, cap, d in photos:
         img_bytes = await _download_image(url)
@@ -431,9 +437,11 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
             img_p.add_run(f"[image error: {e}]")
             continue
         date_th = _thai_date_full(d)
+        cleaned = clean_caption(cap)
+        # caption: "วันที่ DD เดือน YYYY" บรรทัดบน + รายละเอียดที่เหลือด้านล่าง (ไม่ซ้ำวันที่)
         caption_text = f"วันที่ {date_th}"
-        if cap:
-            caption_text = f"{cap}\nวันที่ {date_th}"
+        if cleaned:
+            caption_text = f"วันที่ {date_th}\n{cleaned}"
         _add_image_caption(doc, caption_text, font_size=16)
 
 
