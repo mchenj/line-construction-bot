@@ -412,15 +412,12 @@ def fill_appendix4_xlsx(template_path: str, week_no: int,
     # แทน fitToPage ทำให้ตารางล้นหน้า
     ws.page_setup.scale = None
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    # ตั้ง print area เฉพาะข้อมูลจริง (B2:..19) — ตัด row 1, col M ที่ว่าง
-    # และคอลัมน์วันที่ที่ไม่ได้ใช้ (เช่น 24-30 เม.ย. = 7 วัน → ตัด col L)
-    last_col_idx = 5 + n_cols_used - 1
-    last_col = openpyxl.utils.get_column_letter(last_col_idx)
-    ws.print_area = f"B2:{last_col}19"
-    # ใส่ page break ที่แถว 20 และคอลัมน์ถัดจาก last_col เพื่อกันส่วนว่างหลุดเป็นหน้าใหม่
+    # print area คลุมถึง col L เสมอ (รักษา merged E5:L5 และ borders ขวาของตาราง)
+    # คอลัมน์วันที่ที่ไม่ใช้จะปล่อยว่าง — เส้นขอบยังอยู่ครบไม่ขาด
+    ws.print_area = "B2:L19"
     from openpyxl.worksheet.pagebreak import Break
     ws.row_breaks.append(Break(id=19))
-    ws.col_breaks.append(Break(id=last_col_idx + 1))
+    ws.col_breaks.append(Break(id=12))  # break หลังคอลัมน์ L
     # margins แคบลงเพื่อให้พื้นที่พิมพ์เยอะขึ้น
     ws.page_margins.left = 0.3
     ws.page_margins.right = 0.3
