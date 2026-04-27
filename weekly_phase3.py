@@ -394,6 +394,25 @@ def fill_appendix4_xlsx(template_path: str, week_no: int,
     for di in range(min(n_days, 8)):
         ws.cell(16, 5 + di).value = totals[di] if di < len(totals) else 0
 
+    # ━━━━━━ บังคับให้ตารางพอดี 1 หน้ากระดาษ A4 แนวนอน ━━━━━━
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    # ตั้ง print area ให้ครอบคลุมข้อมูลทั้งหมด (B1:L19)
+    last_col = openpyxl.utils.get_column_letter(min(5 + max(n_days, 8) - 1, ws.max_column))
+    ws.print_area = f"B1:{last_col}19"
+    # margins แคบลงเพื่อให้พื้นที่พิมพ์เยอะขึ้น
+    ws.page_margins.left = 0.3
+    ws.page_margins.right = 0.3
+    ws.page_margins.top = 0.4
+    ws.page_margins.bottom = 0.4
+    ws.page_margins.header = 0.2
+    ws.page_margins.footer = 0.2
+    # จัดกลางหน้ากระดาษ
+    ws.print_options.horizontalCentered = True
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
