@@ -404,7 +404,7 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         run = p.add_run(title)
         run.bold = True
         run.font.name = "TH SarabunIT๙"
-        run.font.size = Pt(16)
+        run.font.size = Pt(24)
         # บังคับฟอนต์/ขนาด complex-script ให้ตรงกับ ascii — กันตัวอักษรไทยขนาดต่าง
         rPr = run._r.get_or_add_rPr()
         rFonts = rPr.find(qn("w:rFonts"))
@@ -417,7 +417,12 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         if szCs is None:
             szCs = OxmlElement("w:szCs")
             rPr.append(szCs)
-        szCs.set(qn("w:val"), "32")  # 16pt × 2
+        szCs.set(qn("w:val"), "48")  # 24pt × 2
+        # บังคับ bold สำหรับ complex-script ด้วย
+        bCs = rPr.find(qn("w:bCs"))
+        if bCs is None:
+            bCs = OxmlElement("w:bCs")
+            rPr.append(bCs)
 
     # ลบ table เดิมใน template (เปลี่ยนเป็น layout แบบรูปต่อ paragraph)
     for tbl in list(doc.tables):
