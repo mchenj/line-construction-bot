@@ -353,14 +353,42 @@ async def _download_image(url: str) -> bytes:
     return b""
 
 
+def _add_image_caption(doc_or_body, caption: str, font_size: int = 16):
+    """เพิ่ม caption ใต้ภาพ — สไตล์เดียวกับรายงานประจำวัน
+    (ขึ้นบรรทัดใหม่ใช้ line break ใน paragraph เดียว ไม่ใช่ paragraph ใหม่ → ลดช่องว่าง)
+    """
+    cap_p = doc_or_body.add_paragraph()
+    cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cap_p.paragraph_format.space_before = Pt(4)
+    cap_p.paragraph_format.space_after = Pt(6)
+    lines = [l for l in caption.split('\n') if l.strip()]
+    for i, line in enumerate(lines):
+        run = cap_p.add_run(line)
+        run.font.name = "TH SarabunIT๙"
+        run.font.size = Pt(font_size)
+        rPr = run._r.get_or_add_rPr()
+        rFonts = rPr.find(qn("w:rFonts"))
+        if rFonts is None:
+            rFonts = OxmlElement("w:rFonts")
+            rPr.append(rFonts)
+        for attr in ("ascii", "hAnsi", "cs"):
+            rFonts.set(qn(f"w:{attr}"), "TH SarabunIT๙")
+        szCs = rPr.find(qn("w:szCs"))
+        if szCs is None:
+            szCs = OxmlElement("w:szCs")
+            rPr.append(szCs)
+        szCs.set(qn("w:val"), str(font_size * 2))
+        if i < len(lines) - 1:
+            run.add_break()
+
+
 async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: date, week_end: date):
-    """เติมภาพถ่ายในภาคผนวก 1
+    """เติมภาพถ่ายในภาคผนวก 1 — สไตล์เดียวกับรายงานประจำวัน
     template:
       paragraph[0]: ภาพถ่ายการปฏิบัติงานประจำสัปดาห์ที่ XX/YYYY (วันที่ DD - DD MMMM YYYY)
-      table[0]: 36 rows × 2 cols  — pattern: [image row][caption row][image row][caption row]...
-    เราจะ rebuild table นี้ให้ตรงกับจำนวนรูปจริงจาก daily_list
+      table[0]: ตารางภาพ (จะถูกลบทิ้ง แล้ว append รูปแบบ full-width แทน)
     """
-    # update title paragraph
+    # update title paragraph (คงรูปแบบเดิม)
     if doc.paragraphs:
         p = doc.paragraphs[0]
         for r in p.runs:
@@ -373,78 +401,40 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         run.font.name = "TH SarabunIT๙"
         run.font.size = Pt(16)
 
-    # collect (img_url, caption, work_date) tuples
+    # ลบ table เดิมใน template (เปลี่ยนเป็น layout แบบรูปต่อ paragraph)
+    for tbl in list(doc.tables):
+        tbl._element.getparent().remove(tbl._element)
+
+    # collect (img_url, caption, work_date_obj) tuples
     photos = []
     for daily in daily_list:
-        d = date.fromisoformat(daily.get("work_date"))
-        date_short = _thai_date_short(d)
+        try:
+            d = date.fromisoformat(daily.get("work_date"))
+        except Exception:
+            continue
         for img_info in (daily.get("images") or []):
             url = img_info.get("url") or img_info.get("image_url")
             cap = (img_info.get("caption") or "").strip()
             if url:
-                photos.append((url, cap, date_short))
+                photos.append((url, cap, d))
 
-    if not doc.tables:
-        return
-    table = doc.tables[0]
-
-    # template structure:
-    # rows go in pairs: image_row + caption_row
-    # ใน template มี 36 rows = 18 pairs
-    # เราจะเก็บ template_image_row และ template_caption_row จาก row 0,1
-    if len(table.rows) < 2:
-        return
-
-    template_img_tr = deepcopy(table.rows[0]._tr)
-    template_cap_tr = deepcopy(table.rows[1]._tr)
-
-    # ลบ rows ทั้งหมด
-    while len(table.rows) > 0:
-        last = table.rows[-1]
-        last._element.getparent().remove(last._element)
-
-    # เติมรูปทีละ pair (2 รูปต่อแถว — 2 columns)
-    PAIRS_PER_PAGE = 3  # 3 pairs ต่อหน้า (6 รูป)
-    i = 0
-    while i < len(photos):
-        # image row
-        img_tr = deepcopy(template_img_tr)
-        table._tbl.append(img_tr)
-        img_row = table.rows[-1]
-        # ลบ runs/text เก่าใน cells
-        for ci in range(min(2, len(img_row.cells))):
-            cell = img_row.cells[ci]
-            # ล้าง paragraph
-            for old_p in cell.paragraphs[1:]:
-                old_p._element.getparent().remove(old_p._element)
-            for r in cell.paragraphs[0].runs:
-                r._element.getparent().remove(r._element)
-            # ใส่รูป
-            if i + ci < len(photos):
-                url, _, _ = photos[i + ci]
-                img_bytes = await _download_image(url)
-                if img_bytes:
-                    p = cell.paragraphs[0]
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    try:
-                        p.add_run().add_picture(io.BytesIO(img_bytes), width=Inches(2.8))
-                    except Exception as e:
-                        p.add_run(f"[image error: {e}]")
-
-        # caption row
-        cap_tr = deepcopy(template_cap_tr)
-        table._tbl.append(cap_tr)
-        cap_row = table.rows[-1]
-        for ci in range(min(2, len(cap_row.cells))):
-            cell = cap_row.cells[ci]
-            if i + ci < len(photos):
-                _, cap, date_short = photos[i + ci]
-                full_cap = f"{cap}\nวันที่ {date_short}" if cap else f"วันที่ {date_short}"
-                _set_cell_text(cell, full_cap, font_size=14)
-            else:
-                _set_cell_text(cell, "", font_size=14)
-
-        i += 2
+    # เติมรูปทีละใบ (full width 5 นิ้ว) + caption — แบบเดียวกับ daily
+    for url, cap, d in photos:
+        img_bytes = await _download_image(url)
+        if not img_bytes:
+            continue
+        img_p = doc.add_paragraph()
+        img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        try:
+            img_p.add_run().add_picture(io.BytesIO(img_bytes), width=Inches(5.0))
+        except Exception as e:
+            img_p.add_run(f"[image error: {e}]")
+            continue
+        date_th = _thai_date_full(d)
+        caption_text = f"วันที่ {date_th}"
+        if cap:
+            caption_text = f"{cap}\nวันที่ {date_th}"
+        _add_image_caption(doc, caption_text, font_size=16)
 
 
 # ════════════════════════════════════════
