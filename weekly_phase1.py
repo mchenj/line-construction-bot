@@ -388,18 +388,36 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
       paragraph[0]: ภาพถ่ายการปฏิบัติงานประจำสัปดาห์ที่ XX/YYYY (วันที่ DD - DD MMMM YYYY)
       table[0]: ตารางภาพ (จะถูกลบทิ้ง แล้ว append รูปแบบ full-width แทน)
     """
-    # update title paragraph (คงรูปแบบเดิม)
+    # update title paragraph — ใช้เลขไทย + บังคับ TH SarabunIT๙ ทั้ง ascii/hAnsi/cs
+    # และ szCs เพื่อให้ตัวเลขไทยและตัวอักษรไทยขนาดเท่ากันทั้งบรรทัด
     if doc.paragraphs:
         p = doc.paragraphs[0]
         for r in p.runs:
             r._element.getparent().remove(r._element)
-        title = (f"ภาพถ่ายการปฏิบัติงานประจำสัปดาห์ที่ {week_no}/{week_start.year + 543}"
-                 f" (วันที่ {week_start.day} – {week_end.day} {THAI_MONTHS_FULL[week_start.month]}"
-                 f" {week_start.year + 543})")
+        wn   = _to_thai_digits(week_no)
+        yr   = _to_thai_digits(week_start.year + 543)
+        d1   = _to_thai_digits(week_start.day)
+        d2   = _to_thai_digits(week_end.day)
+        month = THAI_MONTHS_FULL[week_start.month]
+        title = (f"ภาพถ่ายการปฏิบัติงานประจำสัปดาห์ที่ {wn}/{yr}"
+                 f" (วันที่ {d1} – {d2} {month} {yr})")
         run = p.add_run(title)
         run.bold = True
         run.font.name = "TH SarabunIT๙"
         run.font.size = Pt(16)
+        # บังคับฟอนต์/ขนาด complex-script ให้ตรงกับ ascii — กันตัวอักษรไทยขนาดต่าง
+        rPr = run._r.get_or_add_rPr()
+        rFonts = rPr.find(qn("w:rFonts"))
+        if rFonts is None:
+            rFonts = OxmlElement("w:rFonts")
+            rPr.append(rFonts)
+        for attr in ("ascii", "hAnsi", "cs"):
+            rFonts.set(qn(f"w:{attr}"), "TH SarabunIT๙")
+        szCs = rPr.find(qn("w:szCs"))
+        if szCs is None:
+            szCs = OxmlElement("w:szCs")
+            rPr.append(szCs)
+        szCs.set(qn("w:val"), "32")  # 16pt × 2
 
     # ลบ table เดิมใน template (เปลี่ยนเป็น layout แบบรูปต่อ paragraph)
     for tbl in list(doc.tables):
