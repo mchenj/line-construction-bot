@@ -792,6 +792,48 @@ async def handle_command(cmd, reply_token, user_id):
             await reply_to_line(reply_token, f"❌ ลบไม่สำเร็จ: {res['msg']}")
         return
 
+    # ━━━━━━ Commands ที่ไม่ใช่การสร้างรายงาน — ตอบทันที (ไม่ต้อง "กำลังสร้าง") ━━━━━━
+    if command == "/add":
+        # ตั้ง target date สำหรับเพิ่มกิจกรรม/รูปย้อนหลัง — TTL 30 นาที
+        if not arg or arg.lower() == "cancel":
+            if add_intent.pop(user_id, None):
+                await reply_to_line(reply_token, "✅ ยกเลิก /add แล้ว")
+            else:
+                await reply_to_line(reply_token,
+                    "❌ ใช้: /add 27/04 หรือ /add 27/04/69\n"
+                    "หรือ /add cancel เพื่อยกเลิก")
+            return
+        target = parse_single_date_arg(arg)
+        if not target:
+            await reply_to_line(reply_token,
+                "❌ รูปแบบวันที่ไม่ถูก\nตัวอย่าง:\n/add 27/04\n/add 27/04/69")
+            return
+        target_str = str(target)
+        expires = datetime.now(timezone.utc) + timedelta(minutes=30)
+        add_intent[user_id] = (target_str, expires)
+        d_th = thai_date_str(target_str)
+        await reply_to_line(reply_token,
+            f"📝 พร้อมเพิ่มข้อมูลในวันที่ {d_th}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"ภายใน 30 นาที — ส่งได้:\n"
+            f"• ข้อความกิจกรรม (เช่น 4. งานเพิ่ม)\n"
+            f"• รูปภาพ (จะผูกกับวันนี้อัตโนมัติ)\n"
+            f"• ระดับน้ำ (เช่น +92.50)\n\n"
+            f"ยกเลิก: /add cancel")
+        return
+
+    if command in ("/upload_plan", "/upload_cm"):
+        kind = "plan" if command == "/upload_plan" else "cm"
+        label = "แผนงานก่อสร้าง" if kind == "plan" else "บุคลากร CM"
+        upload_intent[user_id] = (kind, datetime.now(timezone.utc) + timedelta(minutes=10))
+        await reply_to_line(reply_token,
+            f"📤 พร้อมรับไฟล์ {label}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"กรุณาส่งไฟล์ .xlsx ภายใน 10 นาที\n"
+            f"(ไฟล์เก่าจะถูก backup อัตโนมัติ)")
+        return
+
+    # ━━━━━━ Commands สร้างรายงาน — ใช้เวลานาน ตอบ "กำลังสร้าง..." ก่อน ━━━━━━
     await reply_to_line(reply_token, "⏳ กำลังสร้างรายงาน กรุณารอสักครู่...")
     try:
         if command == "/daily":
@@ -901,44 +943,6 @@ async def handle_command(cmd, reply_token, user_id):
                 fn = f"Weekly_Report_W{wk}_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.pdf"
             except Exception as e:
                 await reply_to_line(reply_token, f"❌ สร้าง PDF ไม่สำเร็จ: {e}\n(ลองใช้ /weekly2 แทน)"); return
-        elif command == "/add":
-            # ตั้ง target date สำหรับเพิ่มกิจกรรม/รูปย้อนหลัง — TTL 30 นาที
-            if not arg or arg.lower() == "cancel":
-                if add_intent.pop(user_id, None):
-                    await reply_to_line(reply_token, "✅ ยกเลิก /add แล้ว")
-                else:
-                    await reply_to_line(reply_token,
-                        "❌ ใช้: /add 27/04 หรือ /add 27/04/69\n"
-                        "หรือ /add cancel เพื่อยกเลิก")
-                return
-            target = parse_single_date_arg(arg)
-            if not target:
-                await reply_to_line(reply_token,
-                    "❌ รูปแบบวันที่ไม่ถูก\nตัวอย่าง:\n/add 27/04\n/add 27/04/69")
-                return
-            target_str = str(target)
-            expires = datetime.now(timezone.utc) + timedelta(minutes=30)
-            add_intent[user_id] = (target_str, expires)
-            d_th = thai_date_str(target_str)
-            await reply_to_line(reply_token,
-                f"📝 พร้อมเพิ่มข้อมูลในวันที่ {d_th}\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"ภายใน 30 นาที — ส่งได้:\n"
-                f"• ข้อความกิจกรรม (เช่น 4. งานเพิ่ม)\n"
-                f"• รูปภาพ (จะผูกกับวันนี้อัตโนมัติ)\n"
-                f"• ระดับน้ำ (เช่น +92.50)\n\n"
-                f"ยกเลิก: /add cancel")
-            return
-        elif command in ("/upload_plan", "/upload_cm"):
-            kind = "plan" if command == "/upload_plan" else "cm"
-            label = "แผนงานก่อสร้าง" if kind == "plan" else "บุคลากร CM"
-            upload_intent[user_id] = (kind, datetime.now(timezone.utc) + timedelta(minutes=10))
-            await reply_to_line(reply_token,
-                f"📤 พร้อมรับไฟล์ {label}\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"กรุณาส่งไฟล์ .xlsx ภายใน 10 นาที\n"
-                f"(ไฟล์เก่าจะถูก backup อัตโนมัติ)")
-            return
         elif command == "/monthly":
             ms = arg or date.today().strftime("%Y-%m")
             dl = get_month_daily_list(ms)
