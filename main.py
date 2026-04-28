@@ -68,6 +68,9 @@ if _ADMIN_AVAILABLE:
 last_text_by_user: dict[str, dict] = {}
 # state สำหรับ /upload_plan และ /upload_cm — {user_id: ("plan"|"cm", expires_datetime)}
 upload_intent: dict[str, tuple] = {}
+# state สำหรับ /add DD/MM — {user_id: (work_date_str, expires_datetime)}
+# เมื่อ active: text + image ถัดไปจะถูกบันทึกในวันที่ระบุ ไม่ใช่ "วันนี้"
+add_intent: dict[str, tuple] = {}
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
@@ -611,6 +614,44 @@ def parse_date_range_arg(arg):
     return start, end
 
 
+def parse_single_date_arg(arg: str):
+    """parse 'DD/MM' หรือ 'DD/MM/YY' หรือ 'DD/MM/YYYY' → date object
+    รองรับปี พ.ศ. 2 หลัก (69) และ 4 หลัก (2569)
+    """
+    if not arg:
+        return None
+    today = date.today()
+    parts = arg.strip().split("/")
+    try:
+        day = int(parts[0])
+        mo = int(parts[1]) if len(parts) > 1 else today.month
+        if len(parts) > 2:
+            yr_raw = int(parts[2])
+            if yr_raw < 100:
+                yr = 2500 + yr_raw - 543
+            elif yr_raw > 2400:
+                yr = yr_raw - 543
+            else:
+                yr = yr_raw
+        else:
+            yr = today.year
+        return date(yr, mo, day)
+    except Exception:
+        return None
+
+
+def get_active_add_target(user_id: str) -> str | None:
+    """คืน work_date string ถ้า /add ยัง active (ภายใน TTL); ถ้าหมดอายุ return None"""
+    intent = add_intent.get(user_id)
+    if not intent:
+        return None
+    target_date, expires = intent
+    if datetime.now(timezone.utc) >= expires:
+        add_intent.pop(user_id, None)
+        return None
+    return target_date
+
+
 def get_week_daily_list(start_date: str, end_date: str):
     if not supabase: return []
     try:
@@ -664,6 +705,12 @@ def _help_text():
         "/upload_plan    → อัปโหลด แผนงานก่อสร้าง .xlsx\n"
         "/upload_cm      → อัปโหลด บุคลากร CM .xlsx\n"
         "(พิมพ์คำสั่ง แล้วส่งไฟล์ภายใน 10 นาที)\n"
+        "━━━━━━━━━━━━━━━\n"
+        "➕ เพิ่มข้อมูลย้อนหลัง:\n"
+        "/add 27/04      → เพิ่มกิจกรรม/รูปในวัน 27 เม.ย.\n"
+        "/add 27/04/69   → ระบุปี (พ.ศ. 2 หลัก) ก็ได้\n"
+        "/add cancel     → ยกเลิก\n"
+        "(หลังสั่ง /add — ส่งข้อความ/รูปภายใน 30 นาที)\n"
         "/monthly        → รายงานเดือนนี้\n"
         "━━━━━━━━━━━━━━━\n"
         "🌊 บันทึกระดับน้ำ (พิมพ์ตัวเลขอย่างเดียว):\n"
@@ -829,6 +876,34 @@ async def handle_command(cmd, reply_token, user_id):
                 fn = f"Weekly_Report_W{wk}_{ws.strftime('%Y%m%d')}-{we.strftime('%Y%m%d')}.pdf"
             except Exception as e:
                 await reply_to_line(reply_token, f"❌ สร้าง PDF ไม่สำเร็จ: {e}\n(ลองใช้ /weekly2 แทน)"); return
+        elif command == "/add":
+            # ตั้ง target date สำหรับเพิ่มกิจกรรม/รูปย้อนหลัง — TTL 30 นาที
+            if not arg or arg.lower() == "cancel":
+                if add_intent.pop(user_id, None):
+                    await reply_to_line(reply_token, "✅ ยกเลิก /add แล้ว")
+                else:
+                    await reply_to_line(reply_token,
+                        "❌ ใช้: /add 27/04 หรือ /add 27/04/69\n"
+                        "หรือ /add cancel เพื่อยกเลิก")
+                return
+            target = parse_single_date_arg(arg)
+            if not target:
+                await reply_to_line(reply_token,
+                    "❌ รูปแบบวันที่ไม่ถูก\nตัวอย่าง:\n/add 27/04\n/add 27/04/69")
+                return
+            target_str = str(target)
+            expires = datetime.now(timezone.utc) + timedelta(minutes=30)
+            add_intent[user_id] = (target_str, expires)
+            d_th = thai_date_str(target_str)
+            await reply_to_line(reply_token,
+                f"📝 พร้อมเพิ่มข้อมูลในวันที่ {d_th}\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"ภายใน 30 นาที — ส่งได้:\n"
+                f"• ข้อความกิจกรรม (เช่น 4. งานเพิ่ม)\n"
+                f"• รูปภาพ (จะผูกกับวันนี้อัตโนมัติ)\n"
+                f"• ระดับน้ำ (เช่น +92.50)\n\n"
+                f"ยกเลิก: /add cancel")
+            return
         elif command in ("/upload_plan", "/upload_cm"):
             kind = "plan" if command == "/upload_plan" else "cm"
             label = "แผนงานก่อสร้าง" if kind == "plan" else "บุคลากร CM"
@@ -884,10 +959,13 @@ async def webhook(request: Request):
             # ตรวจสอบว่าเป็นข้อความระดับน้ำแบบ standalone เช่น "+97.50" หรือ "-2.30"
             if re.match(r'^[+-]\d+(?:\.\d+)?$', text):
                 wl = float(text)
+                # ถ้า /add active ใช้ target date, ไม่งั้นใช้ context หรือวันนี้
+                add_target = get_active_add_target(user_id)
                 last = last_text_by_user.get(user_id)
-                wl_date = (last["work_date"] if last and
-                           (datetime.now(timezone.utc)-last["timestamp"]).total_seconds() < 600
-                           else today_str)
+                wl_date = (add_target if add_target
+                           else (last["work_date"] if last and
+                                 (datetime.now(timezone.utc)-last["timestamp"]).total_seconds() < 600
+                                 else today_str))
                 if supabase:
                     try:
                         supabase.table("daily_reports").update(
@@ -901,7 +979,9 @@ async def webhook(request: Request):
                 continue
 
             parsed    = parse_construction_report(text)
-            work_date = parsed["work_date"] or today_str
+            # ถ้า /add active ใช้ target date (override parsed/today)
+            add_target = get_active_add_target(user_id)
+            work_date = add_target or parsed["work_date"] or today_str
             labor     = parsed.get("labor",{})
             equipment = parsed.get("equipment",[])
 
@@ -947,17 +1027,25 @@ async def webhook(request: Request):
                 image_url   = upload_image(img_bytes, fn)
                 caption, work_date = "", today_str
 
-                # ลอง in-memory ก่อน (เร็วที่สุด)
-                last = last_text_by_user.get(user_id)
-                if last and (datetime.now(timezone.utc)-last["timestamp"]).total_seconds() < 600:
-                    caption    = build_image_caption(last["text"])
-                    work_date  = last["work_date"]
+                # ลำดับความสำคัญ: /add target → in-memory context → Supabase fallback → today
+                add_target = get_active_add_target(user_id)
+                if add_target:
+                    work_date = add_target
+                    # caption จาก context ล่าสุด (ถ้ามี) ไม่งั้นเว้นว่าง
+                    last = last_text_by_user.get(user_id)
+                    if last and last.get("work_date") == add_target:
+                        caption = build_image_caption(last["text"])
                 else:
-                    # fallback: ดึงจาก Supabase (รับมือ server restart / redeploy)
-                    db_last = get_last_text_context(user_id)
-                    if db_last:
-                        caption   = build_image_caption(db_last["text"])
-                        work_date = db_last["work_date"]
+                    last = last_text_by_user.get(user_id)
+                    if last and (datetime.now(timezone.utc)-last["timestamp"]).total_seconds() < 600:
+                        caption    = build_image_caption(last["text"])
+                        work_date  = last["work_date"]
+                    else:
+                        # fallback: ดึงจาก Supabase (รับมือ server restart / redeploy)
+                        db_last = get_last_text_context(user_id)
+                        if db_last:
+                            caption   = build_image_caption(db_last["text"])
+                            work_date = db_last["work_date"]
                 save_raw_report({"timestamp":ts_tz,"user_id":user_id,"message_type":"image",
                     "raw_text":f"[รูปภาพ: {fn}]","work_date":work_date,
                     "activities":"[]","quantities":"[]","workers":None,"weather":None,
