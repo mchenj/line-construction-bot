@@ -253,7 +253,9 @@ def parse_construction_report(text: str) -> dict:
 
 
 def build_image_caption(text: str) -> str:
-    """ตัดบรรทัดกำลังพล เครื่องจักร และระดับน้ำออก เหลือแค่วันที่และรายการงาน"""
+    """ตัดบรรทัดกำลังพล เครื่องจักร และระดับน้ำออก เหลือแค่รายการงาน
+    + ลบเลขนำหน้า "1." "2." "3 " ออก เพราะใน caption ใต้ภาพไม่ต้องมีลำดับ
+    """
     lines = []
     for line in text.split('\n'):
         stripped = line.strip()
@@ -270,7 +272,12 @@ def build_image_caption(text: str) -> str:
             continue
         if re.search(r'ระดับน[^\s]*า', stripped) or re.search(r'ระดับน้ำ', stripped):
             continue
-        lines.append(stripped)
+        # ลบเลขลำดับนำหน้า เช่น "1.", "2.", "3 ", "10." (อารบิก) และ "๑.", "๒." (เลขไทย)
+        # รองรับทั้ง "1. xxx", "1.xxx", "1 xxx", "1) xxx"
+        stripped = re.sub(r'^[0-9๐-๙]+\s*[\.\)]\s*', '', stripped)
+        stripped = re.sub(r'^[0-9๐-๙]+\s+(?=[ก-๙ฯเ])', '', stripped)
+        if stripped:
+            lines.append(stripped)
     return '\n'.join(lines)
 
 
@@ -418,13 +425,31 @@ def upsert_daily_report(work_date, parsed):
         print(f"❌ upsert_daily: {e}"); return False
 
 
-def save_activities(work_date, source_id, activities, raw_text):
+def get_max_activity_seq(work_date) -> int:
+    """หา seq_no สูงสุดของ activities ที่มีอยู่แล้วในวันนี้ (สำหรับ /add ต่อท้าย)"""
+    if not supabase or not work_date:
+        return 0
+    try:
+        r = supabase.table("report_activities").select("seq_no").eq(
+            "work_date", work_date).order("seq_no", desc=True).limit(1).execute()
+        if r.data:
+            return int(r.data[0].get("seq_no") or 0)
+    except Exception as e:
+        print(f"❌ get_max_seq: {e}")
+    return 0
+
+
+def save_activities(work_date, source_id, activities, raw_text, seq_offset=0):
+    """บันทึก activities ใน DB
+    seq_offset: ใช้กับ /add — ค่า offset จาก max seq เดิม เพื่อต่อท้าย ไม่ทับซ้อน
+    """
     if not supabase or not work_date or not activities: return False
     try:
         supabase.table("report_activities").insert([{
             "work_date":work_date,"source_id":source_id,
             "activity_type":a.get("type","general"),
-            "description":a.get("description",raw_text[:200]),"seq_no":i+1,
+            "description":a.get("description",raw_text[:200]),
+            "seq_no":i + 1 + seq_offset,
         } for i,a in enumerate(activities)]).execute()
         return True
     except Exception as e:
@@ -1023,7 +1048,9 @@ async def webhook(request: Request):
                 "image_url":None,"image_filename":None,
             })
             upsert_daily_report(work_date, parsed)
-            save_activities(work_date, source_id, parsed["activities"], text)
+            # ถ้า /add active → ต่อท้ายข้อเดิม (ไม่แทรกหน้า)
+            seq_offset = get_max_activity_seq(work_date) if add_target else 0
+            save_activities(work_date, source_id, parsed["activities"], text, seq_offset=seq_offset)
             last_text_by_user[user_id] = {
                 "text":text,"work_date":work_date,
                 "timestamp":datetime.now(timezone.utc),"source_id":source_id,
