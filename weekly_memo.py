@@ -67,6 +67,53 @@ def _redden_paragraph(para):
         _set_run_red(r)
 
 
+def _replace_runs_by_pattern(para, pattern: str, replacement: str) -> bool:
+    """หา substring ใน paragraph ที่ match regex pattern → แทนด้วย replacement
+    รักษา runs อื่น (tabs, suffix text เช่น "จำนวน 12 ชุด") ไว้
+    คืน True ถ้าแทนสำเร็จ
+    """
+    runs = list(para.runs)
+    if not runs:
+        return False
+    # build full text + position map
+    positions = []  # list of (start, end, run_idx)
+    cum = 0
+    parts = []
+    for i, r in enumerate(runs):
+        rt = r.text
+        positions.append((cum, cum + len(rt), i))
+        parts.append(rt)
+        cum += len(rt)
+    full_text = "".join(parts)
+    m = re.search(pattern, full_text)
+    if not m:
+        return False
+    s, e = m.start(), m.end()
+    # หา start_run + end_run
+    start_run = end_run = None
+    s_off = e_off = 0
+    for start, end, idx in positions:
+        if start_run is None and start <= s < end:
+            start_run = idx; s_off = s - start
+        if start < e <= end:
+            end_run = idx; e_off = e - start
+            break
+    if start_run is None or end_run is None:
+        return False
+    start_text = runs[start_run].text
+    end_text = runs[end_run].text
+    if start_run == end_run:
+        # match ทั้งหมดอยู่ใน run เดียว
+        runs[start_run].text = start_text[:s_off] + replacement + end_text[e_off:]
+    else:
+        runs[start_run].text = start_text[:s_off] + replacement
+        runs[end_run].text = end_text[e_off:]
+        # ลบ runs ระหว่าง start และ end
+        for r in runs[start_run + 1 : end_run]:
+            r._element.getparent().remove(r._element)
+    return True
+
+
 # ════════════════════════════════════════
 # 00_memo.docx
 # ════════════════════════════════════════
@@ -95,9 +142,12 @@ def fill_memo(week_no: int, week_start: date, week_end: date,
                 continue
         # บรรทัดรายงานประจำสัปดาห์ ครั้งที่ XX สัปดาห์ที่ XX/YYYY (วันที่ ...)
         if "รายงานประจำสัปดาห์" in text and "ครั้งที่" in text and "สัปดาห์ที่" in text:
-            new_text = (f"รายงานประจำสัปดาห์ ครั้งที่ {week_no} "
-                        f"สัปดาห์ที่ {week_no}/{yr_th} (วันที่ {date_range})")
-            _replace_para_text(p, new_text)
+            _replace_runs_by_pattern(
+                p,
+                r"รายงานประจำสัปดาห์\s*ครั้งที่\s*\d+\s*สัปดาห์ที่\s*\d+/25\d{2}\s*\(วันที่[^)]*\)",
+                (f"รายงานประจำสัปดาห์ ครั้งที่ {week_no} "
+                 f"สัปดาห์ที่ {week_no}/{yr_th} (วันที่ {date_range})")
+            )
 
     # Table[0] — เติม progress data ในทุก row R3-R7 (5 rows ปีงบ)
     if progress and doc.tables:
@@ -182,15 +232,13 @@ def fill_cover_letter(week_no: int, week_start: date, week_end: date) -> bytes:
             _redden_paragraph(p)
             continue
         # บรรทัดที่มี "รายงานประจำสัปดาห์ที่ XX/YYYY (วันที่ ...)"
+        # ใช้ run-level replace เพื่อรักษา tab + suffix "จำนวน 12 ชุด"
         if "รายงานประจำสัปดาห์ที่" in text and re.search(r"\d+/25\d{2}", text):
-            # replace pattern ด้วย regex โดยรักษา prefix/suffix ของย่อหน้า
-            new_text = re.sub(
+            _replace_runs_by_pattern(
+                p,
                 r"รายงานประจำสัปดาห์ที่\s*\d+/25\d{2}\s*\(วันที่[^)]*\)",
-                f"รายงานประจำสัปดาห์ที่ {week_no}/{yr_th} (วันที่ {date_range})",
-                text
+                f"รายงานประจำสัปดาห์ที่ {week_no}/{yr_th} (วันที่ {date_range})"
             )
-            if new_text != text:
-                _replace_para_text(p, new_text)
 
     buf = io.BytesIO()
     doc.save(buf)
