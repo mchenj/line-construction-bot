@@ -404,7 +404,7 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         run = p.add_run(title)
         run.bold = True
         run.font.name = "TH SarabunIT๙"
-        run.font.size = Pt(24)
+        run.font.size = Pt(20)
         # บังคับฟอนต์/ขนาด complex-script ให้ตรงกับ ascii — กันตัวอักษรไทยขนาดต่าง
         rPr = run._r.get_or_add_rPr()
         rFonts = rPr.find(qn("w:rFonts"))
@@ -417,12 +417,22 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         if szCs is None:
             szCs = OxmlElement("w:szCs")
             rPr.append(szCs)
-        szCs.set(qn("w:val"), "48")  # 24pt × 2
+        szCs.set(qn("w:val"), "40")  # 20pt × 2
         # บังคับ bold สำหรับ complex-script ด้วย
         bCs = rPr.find(qn("w:bCs"))
         if bCs is None:
             bCs = OxmlElement("w:bCs")
             rPr.append(bCs)
+
+    # ลบ paragraph ว่างหลัง title (P[1], P[2]) เพื่อไม่ให้มีบรรทัดเว้นเยอะ
+    paras_to_remove = []
+    for i, p in enumerate(doc.paragraphs):
+        if i == 0:
+            continue  # เก็บ title
+        if not p.text.strip():
+            paras_to_remove.append(p)
+    for p in paras_to_remove:
+        p._element.getparent().remove(p._element)
 
     # ลบ table เดิมใน template (เปลี่ยนเป็น layout แบบรูปต่อ paragraph)
     for tbl in list(doc.tables):
