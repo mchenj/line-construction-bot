@@ -534,6 +534,64 @@ def fill_toc(doc, week_no: int, year_th: int):
             return
 
 
+def _merge_daily_docx_files(daily_bytes_list: list) -> bytes:
+    """รวม DOCX bytes หลายไฟล์เป็นไฟล์เดียว — แต่ละใบขึ้นหน้าใหม่
+    ใช้ docxcompose ถ้ามี (รักษา style ดี) ไม่งั้น fallback manual merge
+    """
+    if not daily_bytes_list:
+        return b""
+    if len(daily_bytes_list) == 1:
+        return daily_bytes_list[0]
+
+    # Try docxcompose first (best quality)
+    try:
+        from docxcompose.composer import Composer
+        master = Document(io.BytesIO(daily_bytes_list[0]))
+        composer = Composer(master)
+        for fb in daily_bytes_list[1:]:
+            # บังคับ page break ก่อนต่อไฟล์ถัดไป
+            br_p = master.add_paragraph()
+            br_run = br_p.add_run()
+            br_elem = OxmlElement("w:br")
+            br_elem.set(qn("w:type"), "page")
+            br_run._r.append(br_elem)
+            sub = Document(io.BytesIO(fb))
+            composer.append(sub)
+        out = io.BytesIO()
+        master.save(out)
+        return out.getvalue()
+    except ImportError:
+        # Fallback: manual merge ผ่าน python-docx เพียวๆ
+        return _merge_daily_docx_manual(daily_bytes_list)
+
+
+def _merge_daily_docx_manual(daily_bytes_list: list) -> bytes:
+    """Manual merge ใช้ python-docx เปล่า — copy body elements + เพิ่ม page break
+    ใช้กรณี docxcompose ติดตั้งไม่ได้
+    """
+    from copy import deepcopy
+    master = Document(io.BytesIO(daily_bytes_list[0]))
+    master_body = master.element.body
+    for fb in daily_bytes_list[1:]:
+        # เพิ่ม page break paragraph ใน master ก่อน
+        br_p = master.add_paragraph()
+        br_run = br_p.add_run()
+        br_elem = OxmlElement("w:br")
+        br_elem.set(qn("w:type"), "page")
+        br_run._r.append(br_elem)
+        # copy body elements จาก source (ยกเว้น sectPr ตัวสุดท้าย)
+        sub = Document(io.BytesIO(fb))
+        sub_body = sub.element.body
+        for child in sub_body.iterchildren():
+            tag = child.tag.split("}")[-1]
+            if tag == "sectPr":
+                continue  # ข้าม section properties (ใช้ของ master)
+            master_body.append(deepcopy(child))
+    out = io.BytesIO()
+    master.save(out)
+    return out.getvalue()
+
+
 # ════════════════════════════════════════
 # Main: generate Phase 1 weekly report
 # ════════════════════════════════════════
@@ -616,9 +674,27 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
             fill_cover(prs, week_no, ws, we)
             buf = io.BytesIO()
             prs.save(buf)
-            zf.writestr(f"00_หน้าปก_W{week_no}.pptx", buf.getvalue())
+            zf.writestr("01 ปกรายงานประจำสัปดาห์.pptx", buf.getvalue())
         except Exception as e:
             zf.writestr(f"ERROR_cover.txt", f"Error: {e}")
+
+        # ───── 0a. ใบปะหน้ารายงาน (cover letter) ─────
+        try:
+            from weekly_memo import fill_cover_letter
+            fb = fill_cover_letter(week_no, ws, we)
+            zf.writestr("00 ใบปะหน้ารายงานประจำสัปดาห์.docx", fb)
+        except Exception as e:
+            zf.writestr(f"ERROR_cover_letter.txt", f"Error: {e}")
+
+        # ───── 0b. บันทึกข้อความ (memo) ─────
+        try:
+            from weekly_memo import fill_memo
+            from weekly_phase3 import lookup_week_progress
+            progress = lookup_week_progress(week_no)
+            fb = fill_memo(week_no, ws, we, progress=progress)
+            zf.writestr("02 บันทึกข้อความ.docx", fb)
+        except Exception as e:
+            zf.writestr(f"ERROR_memo.txt", f"Error: {e}")
 
         # ───── 1. สารบัญ (DOCX) ─────
         try:
@@ -626,7 +702,7 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
             fill_toc(doc, week_no, ws.year + 543)
             buf = io.BytesIO()
             doc.save(buf)
-            zf.writestr(f"01_สารบัญ_W{week_no}.docx", buf.getvalue())
+            zf.writestr("03 สารบัญ.docx", buf.getvalue())
         except Exception as e:
             zf.writestr(f"ERROR_toc.txt", f"Error: {e}")
 
@@ -661,7 +737,7 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
                                             exclude_keyword="ของ")
             buf = io.BytesIO()
             doc.save(buf)
-            zf.writestr(f"02_รายละเอียดโครงการ_W{week_no}.docx", buf.getvalue())
+            zf.writestr("04 รายละเอียดโครงการ.docx", buf.getvalue())
         except Exception as e:
             zf.writestr(f"ERROR_project_details.txt", f"Error: {e}")
 
@@ -671,21 +747,33 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
             await fill_photos_table(doc, daily_list, week_no, ws, we)
             buf = io.BytesIO()
             doc.save(buf)
-            zf.writestr(f"03_ภาคผนวก_1_ภาพถ่าย_W{week_no}.docx", buf.getvalue())
+            zf.writestr("ภาคผนวก 1  ภาพถ่ายการปฏิบัติงานประจำสัปดาห์.docx", buf.getvalue())
         except Exception as e:
             zf.writestr(f"ERROR_appendix1_photos.txt", f"Error: {e}")
 
-        # ───── 3. ภาคผนวก 3: รายงานประจำวัน 8 ใบ ─────
+        # ───── 3. ภาคผนวก 3: รายงานประจำวัน — merge เป็น 1 ไฟล์ ─────
+        daily_files = []
         for i, daily in enumerate(daily_list):
             try:
                 wd = daily.get("work_date")
-                d = date.fromisoformat(wd)
                 # ไม่แนบรูปในรายงานประจำวัน — มีภาคผนวก 1 ภาพถ่ายแยกแล้ว
                 fb = await generate_daily(wd, daily, project_name, include_images=False)
-                fname = f"04_ภาคผนวก_3_รายงานประจำวัน_{d.strftime('%Y%m%d')}.docx"
-                zf.writestr(fname, fb)
+                daily_files.append((wd, fb))
             except Exception as e:
                 zf.writestr(f"ERROR_daily_{i+1}.txt", f"Error: {e}")
+
+        if daily_files:
+            try:
+                merged = _merge_daily_docx_files([fb for _, fb in daily_files])
+                fname = "ภาคผนวก 3 รายงานการปฏิบัติงานประจำวัน.docx"
+                zf.writestr(fname, merged)
+            except Exception as e:
+                # fallback: ถ้า merge ล้มเหลว เก็บแยกใบเหมือนเดิม
+                zf.writestr(f"ERROR_merge_daily.txt",
+                            f"Merge failed: {e}\nFallback to separate files")
+                for wd, fb in daily_files:
+                    d = date.fromisoformat(wd)
+                    zf.writestr(f"ภาคผนวก 3 รายงานประจำวัน_{d.strftime('%Y%m%d')}.docx", fb)
 
         # ───── 4. ภาคผนวก 4: บุคลากร CM (Phase 3) ─────
         try:
@@ -693,7 +781,7 @@ async def generate_weekly_phase1(week_no: int, week_start: str, daily_list: list
             cm_data = read_cm_personnel(ws, we)
             if cm_data.get("personnel"):
                 fb = fill_appendix4_xlsx(TEMPLATE_APPENDIX4_XLSX, week_no, ws, we, cm_data)
-                zf.writestr(f"05_ภาคผนวก_4_บุคลากร_CM_W{week_no}.xlsx", fb)
+                zf.writestr("ภาคผนวก 4 การปฏิบัติงานของผู้ให้บริการ.xlsx", fb)
         except Exception as e:
             zf.writestr(f"ERROR_appendix4.txt", f"Error: {e}")
 
