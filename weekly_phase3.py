@@ -42,6 +42,64 @@ _MONTH_SHEET_MAP = {
 # Read: ผลการดำเนินงาน (ผลweekly sheet)
 # ════════════════════════════════════════
 
+def lookup_week_progress(week_no: int) -> Optional[dict]:
+    """ดึงข้อมูลความก้าวหน้าของสัปดาห์ที่ระบุ จาก 'แผน - ผล ประจำสัปดาห์'
+    คืน dict:
+      {
+        "week_no": 89,
+        "from_date": date, "to_date": date,
+        "plan_pct": 0.949,           # แผนงาน % ของสัปดาห์นี้
+        "plan_cum": 13.92,           # แผนงานสะสม %
+        "actual_pct": 0,             # ผลงาน % ของสัปดาห์นี้
+        "actual_cum": 23.14,         # ผลงานสะสม %
+        "diff_pct": -0.949,          # ช้าเร็ว % ของสัปดาห์
+        "diff_cum": 9.22,            # ช้าเร็ว % สะสม
+        "elapsed_days": 645,         # จำนวนวันสะสม
+        "elapsed_pct": 59.28,        # 645/1088 × 100
+      }
+    """
+    if not os.path.exists(DATA_PLAN):
+        return None
+    try:
+        wb = openpyxl.load_workbook(DATA_PLAN, data_only=True)
+        if "แผน - ผล ประจำสัปดาห์" not in wb.sheetnames:
+            return None
+        ws = wb["แผน - ผล ประจำสัปดาห์"]
+        from datetime import datetime as _dt
+        for r in ws.iter_rows(min_row=5, values_only=True):
+            if len(r) < 14:
+                continue
+            wk = r[5]
+            if wk is None:
+                continue
+            try:
+                if int(wk) != week_no:
+                    continue
+            except (ValueError, TypeError):
+                continue
+            d_from = r[3] if isinstance(r[3], _dt) else None
+            d_to   = r[4] if isinstance(r[4], _dt) else None
+            elapsed = float(r[12] or 0)
+            # ระยะเวลาก่อสร้างทั้งหมดตามสัญญาแก้ไขครั้งที่ 1 = 1088 วัน
+            CONTRACT_DAYS = 1088
+            return {
+                "week_no":     int(wk),
+                "from_date":   d_from.date() if d_from else None,
+                "to_date":     d_to.date() if d_to else None,
+                "plan_pct":    float(r[6] or 0),
+                "plan_cum":    float(r[7] or 0),
+                "actual_pct":  float(r[8] or 0),
+                "actual_cum":  float(r[9] or 0),
+                "diff_pct":    float(r[10] or 0),
+                "diff_cum":    float(r[11] or 0),
+                "elapsed_days": int(elapsed),
+                "elapsed_pct": round(elapsed / CONTRACT_DAYS * 100, 2),
+            }
+    except Exception as e:
+        print(f"⚠️ lookup_week_progress: {e}")
+    return None
+
+
 def lookup_week_number(start_date: date, end_date: date) -> Optional[int]:
     """หา week_no จริงจาก sheet 'แผน - ผล ประจำสัปดาห์' โดยจับคู่ from_date + to_date
     คืน int week_no หรือ None ถ้าไม่พบ
