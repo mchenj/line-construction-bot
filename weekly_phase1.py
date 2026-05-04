@@ -177,16 +177,22 @@ def fill_personnel_equipment_table(table, daily_list: list):
     # row 2 onwards: data
     n_days = len(daily_list)
 
-    # update header row 1 — set day numbers (cols 2..9)
+    n_used = min(n_days, 8)
+
+    # update header row 1 — set day numbers (cols 2..9), clear ช่องที่เหลือ
     if len(table.rows) > 1:
         hdr = table.rows[1]
-        for i in range(min(n_days, 8)):
-            d = date.fromisoformat(daily_list[i].get("work_date"))
-            if 2 + i < len(hdr.cells):
+        for i in range(8):
+            if 2 + i >= len(hdr.cells):
+                continue
+            if i < n_used:
+                d = date.fromisoformat(daily_list[i].get("work_date"))
                 _set_cell_text(hdr.cells[2 + i], str(d.day), font_size=14, bold=True)
+            else:
+                _set_cell_text(hdr.cells[2 + i], "", font_size=14, bold=True)
 
     # data rows: index 2 onwards
-    n_rows_avail = len(table.rows) - 3  # หัก header 2 rows + รวม 1 row
+    n_rows_avail = len(table.rows) - 3
     n_items = min(len(_PERSONNEL_EQUIP_ROWS), n_rows_avail)
 
     daily_totals = [0] * 8
@@ -194,29 +200,32 @@ def fill_personnel_equipment_table(table, daily_list: list):
     for ri in range(n_items):
         label, get_fn = _PERSONNEL_EQUIP_ROWS[ri]
         row = table.rows[2 + ri]
-        # col 0: ลำดับที่
         _set_cell_text(row.cells[0], str(ri + 1), font_size=14)
-        # col 1: ประเภท
         _set_cell_text(row.cells[1], label, font_size=14, center=False)
-        # cols 2..9: qty per day
-        for di in range(min(n_days, 8)):
-            qty = get_fn(daily_list[di])
-            daily_totals[di] += qty
-            if 2 + di < len(row.cells):
+        # cols 2..9: เขียนทุกช่อง (ใช้ "" สำหรับช่องที่ไม่มีวัน)
+        for di in range(8):
+            if 2 + di >= len(row.cells):
+                continue
+            if di < n_used:
+                qty = get_fn(daily_list[di])
+                daily_totals[di] += qty
                 _set_cell_text(row.cells[2 + di], str(qty) if qty else "0", font_size=14)
+            else:
+                _set_cell_text(row.cells[2 + di], "", font_size=14)
 
     # รวม row (last row)
     if len(table.rows) >= 3 + n_items:
-        sum_row_idx = 2 + n_items
-        # หา "รวม" row — ในตัวอย่างคือ row 30
         sum_row = table.rows[-1]
-        # col 0-1 may be merged → แค่ใส่ "รวม"
         _set_cell_text(sum_row.cells[0], "", font_size=14)
         _set_cell_text(sum_row.cells[1], "รวม", font_size=14, bold=True)
-        for di in range(min(n_days, 8)):
-            if 2 + di < len(sum_row.cells):
+        for di in range(8):
+            if 2 + di >= len(sum_row.cells):
+                continue
+            if di < n_used:
                 _set_cell_text(sum_row.cells[2 + di], str(daily_totals[di]),
                                font_size=14, bold=True)
+            else:
+                _set_cell_text(sum_row.cells[2 + di], "", font_size=14, bold=True)
 
 
 # ════════════════════════════════════════
@@ -306,33 +315,45 @@ def fill_weather_table(table, daily_list: list):
     row[5]: หมายเหตุ
     """
     n_days = len(daily_list)
+    n_used = min(n_days, 8)
 
-    # row 0: update day numbers (cols 1..8)
+    # row 0: update day numbers (cols 1..8) — clear ช่องที่เหลือ
     if len(table.rows) > 0:
         hdr = table.rows[0]
-        for i in range(min(n_days, 8)):
-            d = date.fromisoformat(daily_list[i].get("work_date"))
-            if 1 + i < len(hdr.cells):
+        for i in range(8):
+            if 1 + i >= len(hdr.cells):
+                continue
+            if i < n_used:
+                d = date.fromisoformat(daily_list[i].get("work_date"))
                 _set_cell_text(hdr.cells[1 + i], str(d.day), font_size=14, bold=True)
+            else:
+                _set_cell_text(hdr.cells[1 + i], "", font_size=14, bold=True)
 
-    # row 1: สภาพอากาศ — note: rows 1-3 ถูก merge แนวตั้งใน template
-    # แค่ใส่ที่ row[1] ก็พอ ไม่ต้อง clear row 2,3 (จะลบข้อมูลใน merged cell)
+    # row 1: สภาพอากาศ
     if len(table.rows) > 1:
         wrow = table.rows[1]
-        for i in range(min(n_days, 8)):
-            wx = _short_weather(daily_list[i].get("weather_morning") or "")
-            if 1 + i < len(wrow.cells):
+        for i in range(8):
+            if 1 + i >= len(wrow.cells):
+                continue
+            if i < n_used:
+                wx = _short_weather(daily_list[i].get("weather_morning") or "")
                 _set_cell_text(wrow.cells[1 + i], wx, font_size=13)
+            else:
+                _set_cell_text(wrow.cells[1 + i], "", font_size=13)
 
     # row 4: ระดับน้ำสูงสุด
     if len(table.rows) > 4:
         lrow = table.rows[4]
-        for i in range(min(n_days, 8)):
-            wl = daily_list[i].get("water_level")
-            wl_str = (f"+{wl:.2f}" if wl is not None and wl >= 0
-                      else (f"{wl:.2f}" if wl is not None else "—"))
-            if 1 + i < len(lrow.cells):
+        for i in range(8):
+            if 1 + i >= len(lrow.cells):
+                continue
+            if i < n_used:
+                wl = daily_list[i].get("water_level")
+                wl_str = (f"+{wl:.2f}" if wl is not None and wl >= 0
+                          else (f"{wl:.2f}" if wl is not None else "—"))
                 _set_cell_text(lrow.cells[1 + i], wl_str, font_size=13)
+            else:
+                _set_cell_text(lrow.cells[1 + i], "", font_size=13)
 
 
 # ════════════════════════════════════════
@@ -404,7 +425,7 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         run = p.add_run(title)
         run.bold = True
         run.font.name = "TH SarabunIT๙"
-        run.font.size = Pt(20)
+        run.font.size = Pt(16)
         # บังคับฟอนต์/ขนาด complex-script ให้ตรงกับ ascii — กันตัวอักษรไทยขนาดต่าง
         rPr = run._r.get_or_add_rPr()
         rFonts = rPr.find(qn("w:rFonts"))
@@ -417,7 +438,7 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         if szCs is None:
             szCs = OxmlElement("w:szCs")
             rPr.append(szCs)
-        szCs.set(qn("w:val"), "40")  # 20pt × 2
+        szCs.set(qn("w:val"), "32")  # 16pt × 2
         # บังคับ bold สำหรับ complex-script ด้วย
         bCs = rPr.find(qn("w:bCs"))
         if bCs is None:
@@ -465,7 +486,7 @@ async def fill_photos_table(doc, daily_list: list, week_no: int, week_start: dat
         img_p = doc.add_paragraph()
         img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         try:
-            img_p.add_run().add_picture(io.BytesIO(img_bytes), width=Inches(5.0))
+            img_p.add_run().add_picture(io.BytesIO(img_bytes), height=Cm(9))
         except Exception as e:
             img_p.add_run(f"[image error: {e}]")
             continue
@@ -545,58 +566,83 @@ def fill_toc(doc, week_no: int, year_th: int):
 
 
 def _merge_daily_docx_files(daily_bytes_list: list) -> bytes:
-    """รวม DOCX bytes หลายไฟล์เป็นไฟล์เดียว — แต่ละใบขึ้นหน้าใหม่
-    ใช้ docxcompose ถ้ามี (รักษา style ดี) ไม่งั้น fallback manual merge
+    """รวม DOCX bytes หลายไฟล์เป็นไฟล์เดียว — แต่ละใบขึ้นหน้าใหม่ "ชัดเจน"
+    ใช้ manual merge เท่านั้น (ไม่ใช้ docxcompose ที่มี artifact หน้าว่าง)
+
+    Strategy:
+    - ใช้ไฟล์แรกเป็น master (รักษา styles, fonts, sectPr)
+    - สำหรับไฟล์ถัดไป: copy paragraphs + tables ของ body (ยกเว้น sectPr)
+    - ก่อนแต่ละไฟล์ใหม่: insert paragraph เปล่าที่มี <w:br w:type="page"/>
+      → บังคับขึ้นหน้าใหม่ครั้งเดียว ไม่มีหน้าว่างเสริม
     """
     if not daily_bytes_list:
         return b""
     if len(daily_bytes_list) == 1:
         return daily_bytes_list[0]
 
-    # Try docxcompose first (best quality)
-    try:
-        from docxcompose.composer import Composer
-        master = Document(io.BytesIO(daily_bytes_list[0]))
-        composer = Composer(master)
-        for fb in daily_bytes_list[1:]:
-            # บังคับ page break ก่อนต่อไฟล์ถัดไป
-            br_p = master.add_paragraph()
-            br_run = br_p.add_run()
-            br_elem = OxmlElement("w:br")
-            br_elem.set(qn("w:type"), "page")
-            br_run._r.append(br_elem)
-            sub = Document(io.BytesIO(fb))
-            composer.append(sub)
-        out = io.BytesIO()
-        master.save(out)
-        return out.getvalue()
-    except ImportError:
-        # Fallback: manual merge ผ่าน python-docx เพียวๆ
-        return _merge_daily_docx_manual(daily_bytes_list)
-
-
-def _merge_daily_docx_manual(daily_bytes_list: list) -> bytes:
-    """Manual merge ใช้ python-docx เปล่า — copy body elements + เพิ่ม page break
-    ใช้กรณี docxcompose ติดตั้งไม่ได้
-    """
     from copy import deepcopy
+    NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    qn_ = lambda t: f"{{{NS}}}{t}"
+
     master = Document(io.BytesIO(daily_bytes_list[0]))
     master_body = master.element.body
-    for fb in daily_bytes_list[1:]:
-        # เพิ่ม page break paragraph ใน master ก่อน
-        br_p = master.add_paragraph()
-        br_run = br_p.add_run()
-        br_elem = OxmlElement("w:br")
-        br_elem.set(qn("w:type"), "page")
-        br_run._r.append(br_elem)
-        # copy body elements จาก source (ยกเว้น sectPr ตัวสุดท้าย)
+
+    # หา sectPr (section properties) ตัวสุดท้ายของ master — ต้อง keep ไว้ที่ end
+    master_sectPr = None
+    for child in list(master_body):
+        if child.tag == qn_("sectPr"):
+            master_sectPr = child
+            master_body.remove(child)  # ดึงออกชั่วคราว เพื่อ append children ใหม่ก่อน
+            break
+
+    def _make_page_break_p():
+        """สร้าง paragraph ที่มี page break ตัวเดียว ไม่มี text เสริม"""
+        p = OxmlElement("w:p")
+        r = OxmlElement("w:r")
+        br = OxmlElement("w:br")
+        br.set(qn_("type"), "page")
+        r.append(br)
+        p.append(r)
+        return p
+
+    def _strip_trailing_empty(body_elem):
+        """ลบ paragraph เปล่าตอนท้าย body — กันหน้าว่างก่อน page break ถัดไป"""
+        children = list(body_elem)
+        for child in reversed(children):
+            tag = child.tag.split("}")[-1]
+            if tag == "sectPr":
+                continue
+            if tag != "p":
+                break
+            # paragraph ที่ไม่มี text + ไม่มี run ที่มี content → empty
+            text_nodes = child.findall(f".//{qn_('t')}")
+            br_nodes = child.findall(f".//{qn_('br')}")
+            has_text = any((t.text or "").strip() for t in text_nodes)
+            if has_text or br_nodes:
+                break  # หยุดที่ paragraph แรกที่มี content
+            body_elem.remove(child)
+
+    # cleanup trailing empty paragraphs ของ master ก่อนเริ่ม merge
+    _strip_trailing_empty(master_body)
+
+    for idx, fb in enumerate(daily_bytes_list[1:], start=1):
+        # 1) ใส่ page break ก่อนเริ่มไฟล์ใหม่
+        master_body.append(_make_page_break_p())
+        # 2) copy ทุก element ของไฟล์นี้ (ข้าม sectPr) แต่ก่อน copy strip trailing empty
         sub = Document(io.BytesIO(fb))
         sub_body = sub.element.body
+        # strip trailing empty paragraphs ของไฟล์ source ก่อน copy
+        _strip_trailing_empty(sub_body)
         for child in sub_body.iterchildren():
             tag = child.tag.split("}")[-1]
             if tag == "sectPr":
-                continue  # ข้าม section properties (ใช้ของ master)
+                continue
             master_body.append(deepcopy(child))
+
+    # 3) ใส่ master sectPr กลับที่เดิม (ท้ายสุด)
+    if master_sectPr is not None:
+        master_body.append(master_sectPr)
+
     out = io.BytesIO()
     master.save(out)
     return out.getvalue()
