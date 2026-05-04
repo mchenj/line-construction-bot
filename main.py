@@ -3,7 +3,7 @@ LINE Construction Report Bot - v4
 เพิ่ม: parser กำลังพล (วิศวกร/หัวหน้า/ช่าง/กรรมกร) และเครื่องจักร
 """
 
-import os, json, re, hmac, hashlib, base64, httpx, calendar
+import os, sys, json, re, hmac, hashlib, base64, httpx, calendar
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, date, timedelta, timezone
@@ -12,6 +12,19 @@ from fastapi.responses import JSONResponse
 from supabase import create_client, Client
 from report_generator import generate_daily, generate_weekly, generate_monthly
 from weekly_phase1 import generate_weekly_phase1
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 try:
     from pdf_merger import generate_weekly_phase1_pdf
     _PDF_AVAILABLE = True
