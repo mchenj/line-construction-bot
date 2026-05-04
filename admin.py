@@ -13,7 +13,9 @@ Routes:
 from __future__ import annotations
 
 import os
+import json
 import subprocess
+import warnings
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from html import escape
@@ -44,6 +46,8 @@ DATA_FILES = {
 }
 
 PROJECT_DISPLAY_NAME = "โครงการพัฒนาพื้นที่ชุมชนหัวรอและพื้นที่ต่อเนื่อง ตำบลหัวรอ อำเภอเมืองหัวรอฯ"
+PLAN_BUDGET_SHEET = "การเบิกจ่ายงบประมาณ"
+PLAN_PROGRESS_SHEET = "แผน - ผล ประจำสัปดาห์"
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -201,7 +205,7 @@ def _collect_dashboard() -> dict:
             lambda: client.table("daily_reports")
             .select(
                 "work_date,total_workers,engineers,foremen,skilled_workers,"
-                "laborers,water_level,weather_morning,report_status,updated_at"
+                "laborers,equipment,water_level,weather_morning,report_status,updated_at"
             )
             .gte("work_date", start_30.isoformat())
             .order("work_date")
@@ -381,15 +385,46 @@ def _activity_items_for_date(rows: list[dict], target: date) -> list[dict]:
     return items[:6]
 
 
+def _equipment_items(raw: object) -> list[dict]:
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    items = []
+    for item in raw:
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def _equipment_count(raw: object) -> int:
+    total = 0
+    for item in _equipment_items(raw):
+        qty = _number_or_none(item.get("qty"))
+        total += int(qty if qty is not None else 1)
+    return total
+
+
 def _field_context(line_reports: list[dict], latest_daily: dict | None, activities: list[dict], images: list[dict]) -> dict:
     latest_event = _recent_events(line_reports[:1])
     workers = int((latest_daily or {}).get("total_workers") or 0)
+    engineers = int((latest_daily or {}).get("engineers") or 0)
+    equipment_count = _equipment_count((latest_daily or {}).get("equipment"))
     water = (latest_daily or {}).get("water_level")
     return {
         "latest_text": latest_event[0]["text"] if latest_event else "Waiting for the next LINE field update.",
         "latest_time": latest_event[0]["time"] if latest_event else "No live event yet",
         "work_date": str((latest_daily or {}).get("work_date") or ""),
         "workers": workers,
+        "engineers": engineers,
+        "equipment_count": equipment_count,
         "weather": (latest_daily or {}).get("weather_morning") or "Not reported",
         "water": "" if water is None else f"{float(water):.2f} m",
         "activity_count": len(activities),
@@ -425,7 +460,93 @@ def _problem_report(activities: list[dict], line_reports: list[dict]) -> dict:
     }
 
 
+def _open_plan_workbook():
+    path = DATA_FILES["plan"][0]
+    if not path.exists():
+        return None, f"{path.name} is missing."
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        return None, f"openpyxl is not available: {exc}"
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return load_workbook(path, data_only=True, read_only=True), None
+    except Exception as exc:
+        return None, f"Cannot read {path.name}: {exc}"
+
+
+def _find_sheet(workbook, preferred: str):
+    if preferred in workbook.sheetnames:
+        return workbook[preferred]
+    compact = preferred.replace(" ", "")
+    for sheet in workbook.worksheets:
+        if compact in sheet.title.replace(" ", ""):
+            return sheet
+    return None
+
+
 def _financial_report() -> dict:
+    workbook, error = _open_plan_workbook()
+    if workbook is not None:
+        try:
+            sheet = _find_sheet(workbook, PLAN_BUDGET_SHEET)
+            if sheet is None:
+                error = f"Sheet {PLAN_BUDGET_SHEET} was not found."
+            else:
+                rows = []
+                total_row = None
+                for row_no in range(1, min(sheet.max_row, 30) + 1):
+                    label = str(sheet.cell(row_no, 2).value or "").strip()
+                    budget = _number_or_none(sheet.cell(row_no, 3).value)
+                    spent = _number_or_none(sheet.cell(row_no, 5).value)
+                    remaining = _number_or_none(sheet.cell(row_no, 7).value)
+                    if not label or label in {"สรุปการใช้จ่าย", "ตามปีงบประมาณ"}:
+                        continue
+                    if budget is None and spent is None and remaining is None:
+                        continue
+                    item = {
+                        "label": label,
+                        "budget": budget or 0,
+                        "spent": spent or 0,
+                        "remaining": remaining or 0,
+                    }
+                    if label == "รวม" and total_row is None:
+                        total_row = item
+                    else:
+                        rows.append(item)
+
+                if total_row is None and rows:
+                    total_row = {
+                        "label": "Total",
+                        "budget": sum(item["budget"] for item in rows),
+                        "spent": sum(item["spent"] for item in rows),
+                        "remaining": sum(item["remaining"] for item in rows),
+                    }
+
+                if total_row and total_row["budget"] > 0:
+                    budget = float(total_row["budget"])
+                    spent = float(total_row["spent"])
+                    remaining = float(total_row["remaining"])
+                    used = max(0, min(100, round((spent / budget) * 100, 1)))
+                    return {
+                        "connected": True,
+                        "headline": f"{used:.1f}% disbursed",
+                        "spent_label": _money(spent),
+                        "budget_label": _money(budget),
+                        "remaining_label": _money(remaining),
+                        "committed_label": _money(remaining),
+                        "percent": used,
+                        "rows": rows,
+                        "total": total_row,
+                        "note": f"{DATA_FILES['plan'][0].name} / {PLAN_BUDGET_SHEET}",
+                    }
+        finally:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+
     budget = _safe_float(os.getenv("PROJECT_BUDGET"))
     spent = _safe_float(os.getenv("PROJECT_SPENT"))
     committed = _safe_float(os.getenv("PROJECT_COMMITTED"))
@@ -435,9 +556,12 @@ def _financial_report() -> dict:
             "headline": "Financial source pending",
             "spent_label": "-",
             "budget_label": "-",
+            "remaining_label": "-",
             "committed_label": "-",
             "percent": 0,
-            "note": "Set PROJECT_BUDGET, PROJECT_SPENT and PROJECT_COMMITTED or connect a finance table.",
+            "rows": [],
+            "total": None,
+            "note": error or "Set PROJECT_BUDGET, PROJECT_SPENT and PROJECT_COMMITTED or connect a finance table.",
         }
     used = max(0, min(100, round((spent / budget) * 100)))
     return {
@@ -445,24 +569,137 @@ def _financial_report() -> dict:
         "headline": f"{used}% used",
         "spent_label": _money(spent),
         "budget_label": _money(budget),
+        "remaining_label": _money(max(0, budget - spent)),
         "committed_label": _money(committed),
         "percent": used,
+        "rows": [],
+        "total": {"label": "Total", "budget": budget, "spent": spent, "remaining": max(0, budget - spent)},
         "note": "Budget values from Railway environment variables.",
     }
 
 
+def _previous_project_period(reference: date) -> tuple[date, date]:
+    if reference.day <= 7:
+        prior_month_end = reference.replace(day=1) - timedelta(days=1)
+        return prior_month_end.replace(day=24), prior_month_end
+    if reference.day <= 15:
+        return reference.replace(day=1), reference.replace(day=7)
+    if reference.day <= 23:
+        return reference.replace(day=8), reference.replace(day=15)
+    return reference.replace(day=16), reference.replace(day=23)
+
+
+def _normal_plan_date(value: object) -> date | None:
+    parsed = None
+    if isinstance(value, datetime):
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    elif value:
+        parsed = _parse_date(str(value)[:10])
+    if parsed and parsed.year >= 2400:
+        try:
+            parsed = parsed.replace(year=parsed.year - 543)
+        except ValueError:
+            return None
+    return parsed
+
+
+def _period_label(start: date, end: date) -> str:
+    if start.month == end.month and start.year == end.year:
+        return f"{start.strftime('%d')}-{end.strftime('%d %b %Y')}"
+    return f"{start.strftime('%d %b')}-{end.strftime('%d %b %Y')}"
+
+
 def _progress_report(daily: list[dict], activities: list[dict], images: list[dict], latest_daily: dict | None) -> dict:
     reported_days = len({str(row.get("work_date")) for row in daily if row.get("work_date")})
+    period_start, period_end = _previous_project_period(_now_bkk().date())
+    period = _period_label(period_start, period_end)
+    workbook, error = _open_plan_workbook()
+    if workbook is not None:
+        try:
+            sheet = _find_sheet(workbook, PLAN_PROGRESS_SHEET)
+            if sheet is None:
+                error = f"Sheet {PLAN_PROGRESS_SHEET} was not found."
+            else:
+                exact_row = None
+                fallback_row = None
+                fallback_end = None
+                fallback_start = None
+                for row_no in range(5, sheet.max_row + 1):
+                    start = _normal_plan_date(sheet.cell(row_no, 4).value)
+                    end = _normal_plan_date(sheet.cell(row_no, 5).value)
+                    if not start or not end:
+                        continue
+                    if start == period_start and end == period_end:
+                        exact_row = (row_no, start, end)
+                        break
+                    if start <= period_start and end >= period_end:
+                        exact_row = (row_no, start, end)
+                    if end <= period_end and (fallback_end is None or end > fallback_end):
+                        fallback_row = row_no
+                        fallback_start = start
+                        fallback_end = end
+
+                selected = exact_row
+                if selected is None and fallback_row is not None:
+                    selected = (fallback_row, fallback_start, fallback_end)
+
+                if selected:
+                    row_no, start, end = selected
+                    plan = _number_or_none(sheet.cell(row_no, 8).value) or 0
+                    actual = _number_or_none(sheet.cell(row_no, 10).value) or 0
+                    variance = _number_or_none(sheet.cell(row_no, 12).value)
+                    if variance is None:
+                        variance = actual - plan
+                    weekly_plan = _number_or_none(sheet.cell(row_no, 7).value) or 0
+                    weekly_actual = _number_or_none(sheet.cell(row_no, 9).value) or 0
+                    status = "On plan"
+                    if variance > 0.05:
+                        status = "Ahead"
+                    elif variance < -0.05:
+                        status = "Behind"
+                    return {
+                        "percent": max(0, min(100, round(actual, 1))),
+                        "headline": f"{status} {abs(variance):.2f}%",
+                        "status": status,
+                        "period_label": _period_label(start, end),
+                        "week_no": str(sheet.cell(row_no, 6).value or ""),
+                        "plan_percent": round(plan, 2),
+                        "actual_percent": round(actual, 2),
+                        "variance_percent": round(variance, 2),
+                        "weekly_plan_percent": round(weekly_plan, 2),
+                        "weekly_actual_percent": round(weekly_actual, 2),
+                        "reported_days": reported_days,
+                        "activity_count": len(activities),
+                        "photo_count": len(images),
+                        "latest_status": str((latest_daily or {}).get("report_status") or "draft").title(),
+                        "note": f"Previous project period from {DATA_FILES['plan'][0].name}: {period}.",
+                    }
+        finally:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+
     coverage = max(0, min(100, round((reported_days / 30) * 100)))
     latest_status = (latest_daily or {}).get("report_status") or "draft"
     return {
         "percent": coverage,
-        "headline": f"{coverage}% reporting coverage",
+        "headline": "Progress source pending",
+        "status": "Pending",
+        "period_label": period,
+        "week_no": "",
+        "plan_percent": 0,
+        "actual_percent": 0,
+        "variance_percent": 0,
+        "weekly_plan_percent": 0,
+        "weekly_actual_percent": 0,
         "reported_days": reported_days,
         "activity_count": len(activities),
         "photo_count": len(images),
         "latest_status": str(latest_status).title(),
-        "note": "Use this as field reporting coverage until plan progress is connected.",
+        "note": error or "Use this as field reporting coverage until plan progress is connected.",
     }
 
 
@@ -487,12 +724,40 @@ def _safe_float(value: object) -> float:
         return 0.0
 
 
+def _number_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).replace(",", "").strip()
+    if not text or text in {"-", "—"}:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
 def _money(value: float) -> str:
     if abs(value) >= 1_000_000:
         return f"{value / 1_000_000:.1f}M"
     if abs(value) >= 1_000:
         return f"{value / 1_000:.1f}K"
     return f"{value:.0f}"
+
+
+def _percent_label(value: object) -> str:
+    number = _number_or_none(value)
+    if number is None:
+        return "-"
+    return f"{number:.2f}%"
+
+
+def _signed_percent_label(value: object) -> str:
+    number = _number_or_none(value)
+    if number is None:
+        return "-"
+    return f"{number:+.2f}%"
 
 
 def _recent_events(rows: list[dict]) -> list[dict]:
@@ -702,11 +967,13 @@ def _render_flow(data: dict) -> str:
 def _render_latest_daily(row: dict | None) -> str:
     if not row:
         return '<p class="empty">No daily report summary found.</p>'
+    machinery = _equipment_count(row.get("equipment"))
     fields = [
         ("Date", row.get("work_date")),
         ("Status", row.get("report_status") or "draft"),
         ("Workers", row.get("total_workers") or 0),
         ("Engineers", row.get("engineers") or 0),
+        ("Machinery", machinery),
         ("Foremen", row.get("foremen") or 0),
         ("Skilled", row.get("skilled_workers") or 0),
         ("Laborers", row.get("laborers") or 0),
@@ -753,9 +1020,13 @@ def _render_site_visual(data: dict) -> str:
           <span>Workers</span>
           <strong>{escape(str(ctx["workers"]))}</strong>
         </div>
-        <div class="mini-card photos">
-          <span>Photos</span>
-          <strong>{escape(str(ctx["photo_count"]))}</strong>
+        <div class="mini-card engineers">
+          <span>Engineers</span>
+          <strong>{escape(str(ctx["engineers"]))}</strong>
+        </div>
+        <div class="mini-card machines">
+          <span>Machines</span>
+          <strong>{escape(str(ctx["equipment_count"]))}</strong>
         </div>
       </div>
     </section>
@@ -781,11 +1052,41 @@ def _render_today_activity(items: list[dict]) -> str:
     return '<ol class="activity-feed">' + "".join(html) + "</ol>"
 
 
+def _render_finance_table(finance: dict) -> str:
+    rows = list(finance.get("rows") or [])
+    total = finance.get("total")
+    display_rows = rows[:4]
+    if total:
+        display_rows.append(total)
+    if not display_rows:
+        return ""
+    body = []
+    for item in display_rows:
+        label = str(item.get("label") or "-")
+        row_class = ' class="total"' if label in {"รวม", "Total"} else ""
+        body.append(
+            f"""
+            <tr{row_class}>
+              <td>{escape(label)}</td>
+              <td>{escape(_money(float(item.get("budget") or 0)))}</td>
+              <td>{escape(_money(float(item.get("spent") or 0)))}</td>
+              <td>{escape(_money(float(item.get("remaining") or 0)))}</td>
+            </tr>
+            """
+        )
+    return (
+        '<table class="mini-table finance-table">'
+        "<thead><tr><th>Year</th><th>Budget</th><th>Paid</th><th>Balance</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
 def _render_cockpit_cards(data: dict) -> str:
     ctx = data["field_context"]
     finance = data["financial_report"]
     progress = data["progress_report"]
     problem = data["problem_report"]
+    finance_table = _render_finance_table(finance)
     return f"""
     <section class="cockpit-grid">
       <article class="glass-card assistant-card">
@@ -811,8 +1112,9 @@ def _render_cockpit_cards(data: dict) -> str:
         <dl class="compact-stats">
           <div><dt>Spent</dt><dd>{escape(finance["spent_label"])}</dd></div>
           <div><dt>Budget</dt><dd>{escape(finance["budget_label"])}</dd></div>
-          <div><dt>Committed</dt><dd>{escape(finance["committed_label"])}</dd></div>
+          <div><dt>Balance</dt><dd>{escape(finance["remaining_label"])}</dd></div>
         </dl>
+        {finance_table}
         <small>{escape(finance["note"])}</small>
       </article>
 
@@ -823,11 +1125,11 @@ def _render_cockpit_cards(data: dict) -> str:
         </div>
         <div class="progress-line red"><i style="width:{int(progress["percent"])}%"></i></div>
         <dl class="compact-stats">
-          <div><dt>Days</dt><dd>{escape(str(progress["reported_days"]))}</dd></div>
-          <div><dt>Activities</dt><dd>{escape(str(progress["activity_count"]))}</dd></div>
-          <div><dt>Status</dt><dd>{escape(progress["latest_status"])}</dd></div>
+          <div><dt>Plan</dt><dd>{escape(_percent_label(progress["plan_percent"]))}</dd></div>
+          <div><dt>Actual</dt><dd>{escape(_percent_label(progress["actual_percent"]))}</dd></div>
+          <div><dt>Variance</dt><dd>{escape(_signed_percent_label(progress["variance_percent"]))}</dd></div>
         </dl>
-        <small>{escape(progress["note"])}</small>
+        <small>{escape(progress["period_label"])} · Week {escape(str(progress["week_no"] or "-"))} · {escape(progress["note"])}</small>
       </article>
 
       <article class="glass-card problem-card">
@@ -992,10 +1294,11 @@ def _page_css() -> str:
     .live-chip { top: 18px; right: 18px; padding: 12px 14px; min-width: 170px; }
     .live-chip b, .mini-card span { display: block; font-size: 11px; color: var(--muted); }
     .live-chip span { display: block; margin-top: 4px; font-weight: 750; }
-    .mini-card { padding: 13px 15px; min-width: 112px; }
-    .mini-card strong { display: block; font-size: 30px; line-height: 1; margin-top: 6px; }
+    .mini-card { padding: 13px 14px; min-width: 96px; }
+    .mini-card strong { display: block; font-size: 28px; line-height: 1; margin-top: 6px; }
     .mini-card.workers { left: 18px; bottom: 18px; }
-    .mini-card.photos { right: 18px; bottom: 18px; }
+    .mini-card.engineers { left: 50%; bottom: 18px; transform: translateX(-50%); }
+    .mini-card.machines { right: 18px; bottom: 18px; }
     .cockpit-grid {
       display: grid;
       grid-template-columns: 1.35fr repeat(3, minmax(180px, 1fr));
@@ -1028,6 +1331,11 @@ def _page_css() -> str:
     .compact-stats div { background: var(--soft); border-radius: 8px; padding: 9px; }
     .compact-stats dt { color: var(--muted); font-size: 11px; }
     .compact-stats dd { margin: 4px 0 0; font-weight: 800; }
+    .mini-table { width: 100%; border-collapse: collapse; margin: 2px 0 12px; font-size: 11px; }
+    .mini-table th, .mini-table td { padding: 6px 4px; border-bottom: 1px solid rgba(23,23,23,.08); text-align: right; white-space: nowrap; }
+    .mini-table th:first-child, .mini-table td:first-child { text-align: left; white-space: normal; }
+    .mini-table th { color: var(--muted); font-weight: 750; }
+    .mini-table .total td { color: var(--red); font-weight: 850; border-bottom: 0; }
     .glass-card small { color: var(--muted); line-height: 1.35; display: block; }
     .problem-count { display: flex; align-items: end; gap: 10px; }
     .problem-count strong { font-size: 36px; line-height: 1; color: var(--red); }
@@ -1291,6 +1599,8 @@ def _page_css() -> str:
       main { padding-left: 14px; padding-right: 14px; }
       .brand h1 { font-size: 16px; }
       .compact-stats { grid-template-columns: 1fr; }
+      .mini-card { min-width: 84px; padding: 10px; }
+      .mini-card strong { font-size: 24px; }
     }
     """
 
