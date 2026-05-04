@@ -308,6 +308,14 @@ def _summarize_dashboard(data: dict, start_14: date, start_30: date) -> dict:
 
     activity_counts = Counter((row.get("activity_type") or "general") for row in activities)
     activity_top = activity_counts.most_common(8)
+    active_date = today
+    if latest_daily:
+        active_date = _parse_date(latest_daily.get("work_date")) or today
+    today_activities = _activity_items_for_date(activities, active_date)
+    problem_report = _problem_report(activities, line_reports)
+    financial_report = _financial_report()
+    progress_report = _progress_report(daily, activities, images, latest_daily)
+    field_context = _field_context(line_reports, latest_daily, today_activities, images)
 
     plan_ok = data["files"]["plan"]["exists"]
     cm_ok = data["files"]["cm"]["exists"]
@@ -348,7 +356,143 @@ def _summarize_dashboard(data: dict, start_14: date, start_30: date) -> dict:
         "activity_top": activity_top,
         "water_points": water_points[-14:],
         "recent_events": _recent_events(line_reports[:12]),
+        "field_context": field_context,
+        "today_activities": today_activities,
+        "financial_report": financial_report,
+        "progress_report": progress_report,
+        "problem_report": problem_report,
+        "recent_photos": _recent_photos(images),
     }
+
+
+def _activity_items_for_date(rows: list[dict], target: date) -> list[dict]:
+    items = []
+    for row in sorted(rows, key=lambda x: (str(x.get("work_date") or ""), int(x.get("seq_no") or 0))):
+        if _parse_date(row.get("work_date")) != target:
+            continue
+        items.append(
+            {
+                "type": str(row.get("activity_type") or "general").replace("_", " ").title(),
+                "text": _short(row.get("description") or "Activity recorded", 92),
+                "seq": int(row.get("seq_no") or len(items) + 1),
+                "date": target.isoformat(),
+            }
+        )
+    return items[:6]
+
+
+def _field_context(line_reports: list[dict], latest_daily: dict | None, activities: list[dict], images: list[dict]) -> dict:
+    latest_event = _recent_events(line_reports[:1])
+    workers = int((latest_daily or {}).get("total_workers") or 0)
+    water = (latest_daily or {}).get("water_level")
+    return {
+        "latest_text": latest_event[0]["text"] if latest_event else "Waiting for the next LINE field update.",
+        "latest_time": latest_event[0]["time"] if latest_event else "No live event yet",
+        "work_date": str((latest_daily or {}).get("work_date") or ""),
+        "workers": workers,
+        "weather": (latest_daily or {}).get("weather_morning") or "Not reported",
+        "water": "" if water is None else f"{float(water):.2f} m",
+        "activity_count": len(activities),
+        "photo_count": len(images),
+    }
+
+
+def _problem_report(activities: list[dict], line_reports: list[dict]) -> dict:
+    keywords = (
+        "problem", "issue", "risk", "delay", "blocked", "struggle",
+        "ปัญหา", "ล่าช้า", "ติด", "ขัดข้อง", "เสีย", "รอ", "แก้ไข",
+    )
+    candidates = []
+    for row in list(activities) + list(line_reports):
+        text = " ".join(str(row.get(k) or "") for k in ("description", "raw_text", "activity_type"))
+        lowered = text.lower()
+        if any(k.lower() in lowered for k in keywords):
+            candidates.append(
+                {
+                    "date": str(row.get("work_date") or ""),
+                    "text": _short(text, 120),
+                }
+            )
+    severity = "Clear"
+    if len(candidates) >= 3:
+        severity = "Watch"
+    if len(candidates) >= 6:
+        severity = "Attention"
+    return {
+        "count": len(candidates),
+        "status": severity,
+        "latest": candidates[0] if candidates else {"date": "", "text": "No problem keywords detected in recent reports."},
+    }
+
+
+def _financial_report() -> dict:
+    budget = _safe_float(os.getenv("PROJECT_BUDGET"))
+    spent = _safe_float(os.getenv("PROJECT_SPENT"))
+    committed = _safe_float(os.getenv("PROJECT_COMMITTED"))
+    if budget <= 0:
+        return {
+            "connected": False,
+            "headline": "Financial source pending",
+            "spent_label": "-",
+            "budget_label": "-",
+            "committed_label": "-",
+            "percent": 0,
+            "note": "Set PROJECT_BUDGET, PROJECT_SPENT and PROJECT_COMMITTED or connect a finance table.",
+        }
+    used = max(0, min(100, round((spent / budget) * 100)))
+    return {
+        "connected": True,
+        "headline": f"{used}% used",
+        "spent_label": _money(spent),
+        "budget_label": _money(budget),
+        "committed_label": _money(committed),
+        "percent": used,
+        "note": "Budget values from Railway environment variables.",
+    }
+
+
+def _progress_report(daily: list[dict], activities: list[dict], images: list[dict], latest_daily: dict | None) -> dict:
+    reported_days = len({str(row.get("work_date")) for row in daily if row.get("work_date")})
+    coverage = max(0, min(100, round((reported_days / 30) * 100)))
+    latest_status = (latest_daily or {}).get("report_status") or "draft"
+    return {
+        "percent": coverage,
+        "headline": f"{coverage}% reporting coverage",
+        "reported_days": reported_days,
+        "activity_count": len(activities),
+        "photo_count": len(images),
+        "latest_status": str(latest_status).title(),
+        "note": "Use this as field reporting coverage until plan progress is connected.",
+    }
+
+
+def _recent_photos(rows: list[dict]) -> list[dict]:
+    photos = []
+    for row in rows[:6]:
+        photos.append(
+            {
+                "url": row.get("image_url"),
+                "caption": _short(row.get("caption") or "Recent field photo", 72),
+                "date": str(row.get("work_date") or ""),
+            }
+        )
+    return photos
+
+
+def _safe_float(value: object) -> float:
+    try:
+        text = str(value or "").replace(",", "").strip()
+        return float(text) if text else 0.0
+    except Exception:
+        return 0.0
+
+
+def _money(value: float) -> str:
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if abs(value) >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return f"{value:.0f}"
 
 
 def _recent_events(rows: list[dict]) -> list[dict]:
@@ -575,31 +719,178 @@ def _render_latest_daily(row: dict | None) -> str:
     return f'<div class="fact-grid">{cells}</div>'
 
 
+def _render_site_visual(data: dict) -> str:
+    photos = data.get("recent_photos") or []
+    hero_photo = next((p for p in photos if p.get("url")), None)
+    image_html = ""
+    if hero_photo:
+        image_html = (
+            f'<img class="site-photo" src="{escape(str(hero_photo["url"]))}" '
+            f'alt="{escape(hero_photo["caption"])}">'
+        )
+    else:
+        image_html = """
+        <div class="site-placeholder" aria-label="Construction visualization">
+          <span></span><span></span><span></span>
+          <i></i>
+        </div>
+        """
+    ctx = data["field_context"]
+    return f"""
+    <section class="site-stage">
+      <div class="site-copy">
+        <span class="eyebrow">Live Project Cockpit</span>
+        <h2>{escape(PROJECT_DISPLAY_NAME)}</h2>
+        <p>{escape(ctx["latest_text"])}</p>
+      </div>
+      <div class="site-visual">
+        {image_html}
+        <div class="live-chip">
+          <b>Now</b>
+          <span>{escape(ctx["latest_time"])}</span>
+        </div>
+        <div class="mini-card workers">
+          <span>Workers</span>
+          <strong>{escape(str(ctx["workers"]))}</strong>
+        </div>
+        <div class="mini-card photos">
+          <span>Photos</span>
+          <strong>{escape(str(ctx["photo_count"]))}</strong>
+        </div>
+      </div>
+    </section>
+    """
+
+
+def _render_today_activity(items: list[dict]) -> str:
+    if not items:
+        return '<p class="empty">No activity recorded for the current field date.</p>'
+    html = []
+    for item in items:
+        html.append(
+            f"""
+            <li>
+              <b>{escape(str(item["seq"]).zfill(2))}</b>
+              <div>
+                <span>{escape(item["type"])}</span>
+                <p>{escape(item["text"])}</p>
+              </div>
+            </li>
+            """
+        )
+    return '<ol class="activity-feed">' + "".join(html) + "</ol>"
+
+
+def _render_cockpit_cards(data: dict) -> str:
+    ctx = data["field_context"]
+    finance = data["financial_report"]
+    progress = data["progress_report"]
+    problem = data["problem_report"]
+    return f"""
+    <section class="cockpit-grid">
+      <article class="glass-card assistant-card">
+        <div class="card-head">
+          <span class="eyebrow">Site Assistant</span>
+          <b>{escape(ctx["work_date"] or "Live")}</b>
+        </div>
+        <p>{escape(ctx["latest_text"])}</p>
+        <div class="assistant-actions">
+          <span>Today activity</span>
+          <span>Progress check</span>
+          <span>Risk watch</span>
+          <span>Report ready</span>
+        </div>
+      </article>
+
+      <article class="glass-card finance-card">
+        <div class="card-head">
+          <span class="eyebrow">Financial Report</span>
+          <b>{escape(finance["headline"])}</b>
+        </div>
+        <div class="progress-line"><i style="width:{int(finance["percent"])}%"></i></div>
+        <dl class="compact-stats">
+          <div><dt>Spent</dt><dd>{escape(finance["spent_label"])}</dd></div>
+          <div><dt>Budget</dt><dd>{escape(finance["budget_label"])}</dd></div>
+          <div><dt>Committed</dt><dd>{escape(finance["committed_label"])}</dd></div>
+        </dl>
+        <small>{escape(finance["note"])}</small>
+      </article>
+
+      <article class="glass-card progress-card">
+        <div class="card-head">
+          <span class="eyebrow">Progress Report</span>
+          <b>{escape(progress["headline"])}</b>
+        </div>
+        <div class="progress-line red"><i style="width:{int(progress["percent"])}%"></i></div>
+        <dl class="compact-stats">
+          <div><dt>Days</dt><dd>{escape(str(progress["reported_days"]))}</dd></div>
+          <div><dt>Activities</dt><dd>{escape(str(progress["activity_count"]))}</dd></div>
+          <div><dt>Status</dt><dd>{escape(progress["latest_status"])}</dd></div>
+        </dl>
+        <small>{escape(progress["note"])}</small>
+      </article>
+
+      <article class="glass-card problem-card">
+        <div class="card-head">
+          <span class="eyebrow">Problem Watch</span>
+          <b>{escape(problem["status"])}</b>
+        </div>
+        <p>{escape(problem["latest"]["text"])}</p>
+        <div class="problem-count">
+          <strong>{escape(str(problem["count"]))}</strong>
+          <span>recent warning keywords</span>
+        </div>
+      </article>
+    </section>
+    """
+
+
+def _render_photo_strip(photos: list[dict]) -> str:
+    if not photos:
+        return """
+        <div class="photo-strip empty-photos">
+          <div></div><div></div><div></div>
+        </div>
+        """
+    cards = []
+    for photo in photos[:4]:
+        if photo.get("url"):
+            visual = f'<img src="{escape(str(photo["url"]))}" alt="{escape(photo["caption"])}">'
+        else:
+            visual = "<div></div>"
+        cards.append(
+            f"""
+            <figure>
+              {visual}
+              <figcaption>{escape(photo["caption"])}</figcaption>
+            </figure>
+            """
+        )
+    return '<div class="photo-strip">' + "".join(cards) + "</div>"
+
+
 def _page_css() -> str:
     return """
     :root {
-      --ink: #18110f;
-      --muted: #75635a;
-      --line: #ead8bd;
-      --page: #fff7ed;
+      --ink: #171717;
+      --muted: #6d7176;
+      --line: #deded9;
+      --page: #d9d9d6;
       --panel: #ffffff;
-      --armor: #7f1d1d;
-      --red: #b91c1c;
-      --hot: #dc2626;
-      --gold: #f59e0b;
-      --arc: #facc15;
-      --steel: #24201e;
-      --ok: #15803d;
+      --soft: #f1f1ee;
+      --red: #b51f1a;
+      --red-dark: #5b1110;
+      --gold: #c79221;
+      --gold-soft: #f4dfad;
+      --green: #10a36f;
+      --steel: #242424;
+      --shadow: 0 18px 50px rgba(22, 22, 22, .10);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--ink);
       background: var(--page);
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background:
-        linear-gradient(180deg, #2b0d0d 0, #7f1d1d 132px, #fff7ed 133px, #fff7ed 100%);
-    }
+    body { margin: 0; background: var(--page); }
     a { color: inherit; }
     .shell { min-height: 100vh; }
     .topbar {
@@ -611,78 +902,142 @@ def _page_css() -> str:
       gap: 18px;
       align-items: center;
       padding: 16px clamp(18px, 3vw, 42px);
-      border-bottom: 1px solid rgba(250, 204, 21, .18);
-      background: rgba(43, 13, 13, .94);
+      border-bottom: 1px solid rgba(23, 23, 23, .08);
+      background: rgba(240, 240, 237, .88);
       backdrop-filter: blur(12px);
     }
-    .brand { display: flex; gap: 12px; align-items: center; min-width: 0; color: #fff7ed; }
+    .brand { display: flex; gap: 12px; align-items: center; min-width: 0; color: var(--ink); }
     .brand-mark {
       width: 42px;
       height: 42px;
       border-radius: 8px;
       background:
-        linear-gradient(135deg, #facc15 0 42%, transparent 43%),
-        linear-gradient(135deg, #dc2626 0 63%, #18110f 64% 100%);
-      box-shadow: inset 0 0 0 1px rgba(250, 204, 21, .45), 0 10px 28px rgba(0, 0, 0, .22);
+        linear-gradient(135deg, var(--red) 0 48%, transparent 49%),
+        linear-gradient(135deg, var(--gold) 0 68%, var(--ink) 69% 100%);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .45);
       flex: 0 0 auto;
     }
     .brand h1 { font-size: 18px; line-height: 1.15; margin: 0; letter-spacing: 0; }
-    .brand span { display: block; color: #f8d594; font-size: 12px; margin-top: 3px; max-width: 720px; overflow-wrap: anywhere; }
+    .brand span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; max-width: 720px; overflow-wrap: anywhere; }
     .top-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
     .pill {
       display: inline-flex;
       gap: 8px;
       align-items: center;
-      border: 1px solid rgba(250, 204, 21, .25);
+      border: 1px solid var(--line);
       border-radius: 999px;
       padding: 7px 11px;
-      background: rgba(255, 247, 237, .09);
-      color: #fff7ed;
+      background: rgba(255, 255, 255, .72);
+      color: var(--ink);
       font-size: 12px;
       white-space: nowrap;
     }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
     .dot.warn { background: var(--gold); }
-    .dot.bad { background: var(--hot); }
+    .dot.bad { background: var(--red); }
     main { padding: 24px clamp(18px, 3vw, 42px) 48px; }
-    .project-band {
+    .site-stage {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(280px, 1fr) minmax(360px, .9fr);
       gap: 18px;
-      align-items: end;
+      align-items: stretch;
       margin-bottom: 18px;
-      padding: 18px 20px;
-      border: 1px solid rgba(250, 204, 21, .28);
-      border-left: 5px solid var(--gold);
+      min-height: 430px;
+      padding: 26px;
+      border: 1px solid var(--line);
       border-radius: 8px;
-      background:
-        linear-gradient(135deg, rgba(127, 29, 29, .96), rgba(24, 17, 15, .96)),
-        #7f1d1d;
-      color: #fff7ed;
-      box-shadow: 0 18px 42px rgba(63, 12, 12, .22);
+      background: #eeeeeb;
+      box-shadow: var(--shadow);
+      overflow: hidden;
     }
-    .project-band span {
+    .site-copy { display: flex; flex-direction: column; justify-content: center; max-width: 760px; }
+    .eyebrow {
       display: block;
-      color: #facc15;
+      color: var(--red);
       font-size: 12px;
-      font-weight: 800;
-      margin-bottom: 8px;
       text-transform: uppercase;
+      font-weight: 800;
+      letter-spacing: 0;
+      margin-bottom: 10px;
+    }
+    .site-copy h2 {
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.24;
       letter-spacing: 0;
     }
-    .project-band h2 {
-      margin: 0;
-      font-size: clamp(18px, 2.5vw, 30px);
-      line-height: 1.35;
-      letter-spacing: 0;
-      max-width: 980px;
+    .site-copy p { max-width: 620px; color: var(--muted); font-size: 15px; line-height: 1.6; margin: 18px 0 0; }
+    .site-visual { position: relative; min-height: 350px; border-radius: 8px; background: #e5e5e1; overflow: hidden; }
+    .site-photo { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(.9); }
+    .site-placeholder {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(155deg, transparent 0 48%, rgba(181, 31, 26, .16) 49% 51%, transparent 52%),
+        linear-gradient(180deg, #eeeeeb, #d5d5d1);
     }
-    .project-band p {
-      margin: 0;
-      color: #f8d594;
-      font-size: 13px;
-      text-align: right;
-      white-space: nowrap;
+    .site-placeholder span { position: absolute; background: rgba(255,255,255,.62); border: 1px solid rgba(0,0,0,.04); border-radius: 8px; }
+    .site-placeholder span:nth-child(1) { width: 62%; height: 16%; left: 16%; top: 18%; transform: rotate(-8deg); }
+    .site-placeholder span:nth-child(2) { width: 52%; height: 12%; right: 8%; top: 45%; transform: rotate(8deg); }
+    .site-placeholder span:nth-child(3) { width: 76%; height: 18%; left: 10%; bottom: 16%; transform: rotate(-3deg); }
+    .site-placeholder i { position: absolute; left: 22%; bottom: 24%; width: 44%; height: 6px; background: var(--ink); border-radius: 999px; opacity: .82; }
+    .live-chip, .mini-card {
+      position: absolute;
+      border: 1px solid rgba(255,255,255,.74);
+      background: rgba(255,255,255,.78);
+      backdrop-filter: blur(12px);
+      border-radius: 8px;
+      box-shadow: 0 12px 30px rgba(23,23,23,.12);
+    }
+    .live-chip { top: 18px; right: 18px; padding: 12px 14px; min-width: 170px; }
+    .live-chip b, .mini-card span { display: block; font-size: 11px; color: var(--muted); }
+    .live-chip span { display: block; margin-top: 4px; font-weight: 750; }
+    .mini-card { padding: 13px 15px; min-width: 112px; }
+    .mini-card strong { display: block; font-size: 30px; line-height: 1; margin-top: 6px; }
+    .mini-card.workers { left: 18px; bottom: 18px; }
+    .mini-card.photos { right: 18px; bottom: 18px; }
+    .cockpit-grid {
+      display: grid;
+      grid-template-columns: 1.35fr repeat(3, minmax(180px, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .glass-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.82);
+      box-shadow: var(--shadow);
+      padding: 18px;
+      min-width: 0;
+    }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .card-head b { font-size: 13px; color: var(--ink); text-align: right; }
+    .assistant-card p, .problem-card p { color: var(--muted); line-height: 1.55; margin: 0 0 14px; }
+    .assistant-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .assistant-actions span {
+      border-radius: 8px;
+      background: var(--soft);
+      padding: 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .progress-line { height: 8px; border-radius: 999px; background: #e6e3dc; overflow: hidden; margin: 12px 0 14px; }
+    .progress-line i { display: block; height: 100%; border-radius: inherit; background: var(--gold); }
+    .progress-line.red i { background: var(--red); }
+    .compact-stats { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; margin: 0 0 12px; }
+    .compact-stats div { background: var(--soft); border-radius: 8px; padding: 9px; }
+    .compact-stats dt { color: var(--muted); font-size: 11px; }
+    .compact-stats dd { margin: 4px 0 0; font-weight: 800; }
+    .glass-card small { color: var(--muted); line-height: 1.35; display: block; }
+    .problem-count { display: flex; align-items: end; gap: 10px; }
+    .problem-count strong { font-size: 36px; line-height: 1; color: var(--red); }
+    .problem-count span { color: var(--muted); font-size: 12px; }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, .8fr) minmax(320px, 1.2fr);
+      gap: 18px;
+      margin-bottom: 18px;
+      align-items: start;
     }
     .summary {
       display: grid;
@@ -694,7 +1049,7 @@ def _page_css() -> str:
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      box-shadow: 0 12px 30px rgba(127, 29, 29, .08);
+      box-shadow: var(--shadow);
     }
     .hero-panel {
       padding: 22px;
@@ -713,8 +1068,8 @@ def _page_css() -> str:
       place-items: center;
       background:
         radial-gradient(circle at center, #fff 0 57%, transparent 58%),
-        conic-gradient(var(--gold) calc(var(--score) * 1%), #f1e2c7 0);
-      border: 1px solid #f1d7ad;
+        conic-gradient(var(--red) calc(var(--score) * 1%), #e5e2db 0);
+      border: 1px solid var(--line);
     }
     .health-ring strong { display: block; font-size: 46px; line-height: 1; }
     .health-ring span { color: var(--muted); font-size: 12px; display: block; text-align: center; margin-top: 6px; }
@@ -723,7 +1078,7 @@ def _page_css() -> str:
       font-size: 14px;
       letter-spacing: 0;
       text-transform: uppercase;
-      color: var(--armor);
+      color: var(--ink);
     }
     .runtime { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .runtime div { border-top: 1px solid var(--line); padding-top: 10px; min-width: 0; }
@@ -744,10 +1099,10 @@ def _page_css() -> str:
       border-radius: 8px;
       padding: 14px;
       min-height: 112px;
-      box-shadow: 0 8px 22px rgba(127, 29, 29, .06);
+      box-shadow: none;
     }
     .metric-key { color: var(--muted); font-size: 12px; display: block; }
-    .metric strong { display: block; font-size: clamp(24px, 3vw, 34px); margin: 8px 0 5px; letter-spacing: 0; }
+    .metric strong { display: block; font-size: 30px; margin: 8px 0 5px; letter-spacing: 0; }
     .metric small { color: var(--muted); line-height: 1.35; display: block; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
     .section { padding: 18px; min-width: 0; }
@@ -763,7 +1118,7 @@ def _page_css() -> str:
       padding: 14px;
       min-height: 136px;
       position: relative;
-      background: linear-gradient(180deg, #fff, #fffaf0);
+      background: #fff;
     }
     .flow-node i {
       width: 34px;
@@ -789,7 +1144,7 @@ def _page_css() -> str:
     .flow-node.bad i:after { border-color: var(--red); }
     .flow-node strong { display: block; font-size: 15px; }
     .flow-node span { display: block; color: var(--muted); font-size: 12px; margin: 5px 0 12px; min-height: 32px; overflow-wrap: anywhere; }
-    .flow-node b { font-size: 12px; color: var(--armor); }
+    .flow-node b { font-size: 12px; color: var(--red); }
     .bar-row {
       display: grid;
       grid-template-columns: minmax(96px, 150px) 1fr 38px;
@@ -799,11 +1154,11 @@ def _page_css() -> str:
       font-size: 13px;
     }
     .bar-row span { color: var(--steel); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .bar-track { height: 11px; background: #f5e8d0; border-radius: 999px; overflow: hidden; }
-    .bar-track i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #7f1d1d, #dc2626, #f59e0b); }
+    .bar-track { height: 11px; background: #e6e3dc; border-radius: 999px; overflow: hidden; }
+    .bar-track i { display: block; height: 100%; border-radius: 999px; background: var(--red); }
     .bar-row b { text-align: right; }
     table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
-    th { text-align: left; color: var(--armor); font-weight: 700; border-bottom: 1px solid var(--line); padding: 10px 8px; }
+    th { text-align: left; color: var(--muted); font-weight: 700; border-bottom: 1px solid var(--line); padding: 10px 8px; }
     td { border-bottom: 1px solid #f3e3c8; padding: 11px 8px; vertical-align: middle; }
     td strong { display: block; }
     td span { color: var(--muted); font-size: 12px; display: block; margin-top: 2px; }
@@ -821,13 +1176,13 @@ def _page_css() -> str:
     input[type="file"] {
       max-width: 210px;
       font-size: 12px;
-      color: var(--armor);
+      color: var(--ink);
     }
     button, .icon-link {
       appearance: none;
       border: 1px solid #e4c993;
       background: #fff;
-      color: var(--armor);
+      color: var(--ink);
       min-height: 34px;
       padding: 7px 12px;
       border-radius: 8px;
@@ -838,8 +1193,8 @@ def _page_css() -> str:
       white-space: nowrap;
     }
     button.primary {
-      border-color: var(--armor);
-      background: linear-gradient(135deg, var(--armor), var(--red));
+      border-color: var(--ink);
+      background: var(--ink);
       color: #fff;
     }
     button:hover, .icon-link:hover { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(245, 158, 11, .16); }
@@ -871,6 +1226,23 @@ def _page_css() -> str:
       background: #fffaf0;
       min-width: 0;
     }
+    .activity-feed { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 10px; }
+    .activity-feed li { display: grid; grid-template-columns: 38px 1fr; gap: 10px; align-items: start; }
+    .activity-feed b { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: var(--ink); color: #fff; font-size: 12px; }
+    .activity-feed span { color: var(--red); font-size: 12px; font-weight: 800; }
+    .activity-feed p { margin: 3px 0 0; color: var(--ink); line-height: 1.4; }
+    .photo-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+    .photo-strip figure { margin: 0; min-width: 0; }
+    .photo-strip img, .photo-strip figure > div, .empty-photos div {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1.15;
+      object-fit: cover;
+      background: linear-gradient(135deg, #eeeeeb, #cfcfca);
+      border-radius: 8px;
+      border: 1px solid var(--line);
+    }
+    .photo-strip figcaption { color: var(--muted); font-size: 11px; margin-top: 6px; line-height: 1.35; }
     .split-head {
       display: flex;
       align-items: center;
@@ -892,16 +1264,20 @@ def _page_css() -> str:
     .footnote { color: var(--muted); font-size: 12px; margin-top: 14px; }
     @media (max-width: 1120px) {
       .metrics { grid-template-columns: repeat(3, 1fr); }
-      .summary, .grid-2 { grid-template-columns: 1fr; }
+      .summary, .grid-2, .site-stage, .dashboard-grid { grid-template-columns: 1fr; }
+      .cockpit-grid { grid-template-columns: 1fr 1fr; }
       .flow { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
     }
     @media (max-width: 720px) {
       .topbar { align-items: flex-start; flex-direction: column; }
-      .project-band { grid-template-columns: 1fr; align-items: start; }
-      .project-band p { text-align: left; white-space: normal; }
+      .site-stage { padding: 18px; min-height: 0; }
+      .site-copy h2 { font-size: 22px; }
+      .site-visual { min-height: 300px; }
+      .cockpit-grid { grid-template-columns: 1fr; }
       .metrics { grid-template-columns: 1fr 1fr; }
       .runtime, .fact-grid { grid-template-columns: 1fr; }
       .flow { grid-template-columns: 1fr; }
+      .photo-strip { grid-template-columns: 1fr 1fr; }
       .bar-row { grid-template-columns: 1fr 54px; }
       .bar-row .bar-track { grid-column: 1 / -1; order: 3; }
       table, thead, tbody, tr, th, td { display: block; }
@@ -914,6 +1290,7 @@ def _page_css() -> str:
       .metrics { grid-template-columns: 1fr; }
       main { padding-left: 14px; padding-right: 14px; }
       .brand h1 { font-size: 16px; }
+      .compact-stats { grid-template-columns: 1fr; }
     }
     """
 
@@ -958,35 +1335,8 @@ def _render_admin_page(data: dict, token: str) -> str:
   </header>
 
   <main>
-    <section class="project-band">
-      <div>
-        <span>Active Construction Project</span>
-        <h2>{escape(PROJECT_DISPLAY_NAME)}</h2>
-      </div>
-      <p>Minimal control room · Bangkok time</p>
-    </section>
-
-    <section class="summary">
-      <div class="hero-panel">
-        <h2>System Readiness</h2>
-        <div class="health-ring" style="--score:{int(data["health_score"])}">
-          <div><strong>{int(data["health_score"])}</strong><span>health score</span></div>
-        </div>
-        <div class="runtime">
-          <div><span>Runtime</span><strong>{escape(env["railway_name"])}</strong></div>
-          <div><span>Port</span><strong>{escape(str(env["port"]))}</strong></div>
-          <div><span>Weekly schedule</span><strong>{escape(env["weekly_schedule"])}</strong></div>
-          <div><span>Recipients</span><strong>{escape(str(env["weekly_targets"]))}</strong></div>
-        </div>
-      </div>
-      <div class="chart-panel">
-        <div class="split-head">
-          <h2>Fourteen Day Field Signal</h2>
-          <span class="pill">Messages + workforce</span>
-        </div>
-        {_render_report_chart(data["daily_series"])}
-      </div>
-    </section>
+    {_render_site_visual(data)}
+    {_render_cockpit_cards(data)}
 
     <section class="metrics" aria-label="Key metrics">
       {_render_metric("Today Messages", metrics["today_messages"], "LINE entries dated today", "#b91c1c")}
@@ -997,7 +1347,32 @@ def _render_admin_page(data: dict, token: str) -> str:
       {_render_metric("Activity Types", metrics["activity_types"], "Detected work categories", "#18110f")}
     </section>
 
-    <section class="section">
+    <section class="dashboard-grid">
+      <div class="section">
+        <h2>Today's Activity</h2>
+        {_render_today_activity(data["today_activities"])}
+      </div>
+      <div class="chart-panel">
+        <div class="split-head">
+          <h2>Fourteen Day Field Signal</h2>
+          <span class="pill">Messages + workforce</span>
+        </div>
+        {_render_report_chart(data["daily_series"])}
+      </div>
+    </section>
+
+    <section class="grid-2">
+      <div class="section">
+        <h2>Recent Field Photos</h2>
+        {_render_photo_strip(data["recent_photos"])}
+      </div>
+      <div class="section">
+        <h2>Water Level Trend</h2>
+        {_render_waterline(data["water_points"])}
+      </div>
+    </section>
+
+    <section class="section" style="margin-top:18px">
       <div class="split-head">
         <h2>Operational Topology</h2>
         <form action="/admin/trigger/weekly?token={token_q}" method="post">
@@ -1014,20 +1389,14 @@ def _render_admin_page(data: dict, token: str) -> str:
         {_render_activity_chart(data["activity_top"])}
       </div>
       <div class="section">
-        <h2>Water Level Trend</h2>
-        {_render_waterline(data["water_points"])}
-      </div>
-    </section>
-
-    <section class="grid-2" style="margin-top:18px">
-      <div class="section">
         <h2>Latest Daily Snapshot</h2>
         {_render_latest_daily(data["latest_daily"])}
       </div>
-      <div class="section">
-        <h2>Recent LINE Activity</h2>
-        {_render_recent(data["recent_events"])}
-      </div>
+    </section>
+
+    <section class="section" style="margin-top:18px">
+      <h2>Recent LINE Activity</h2>
+      {_render_recent(data["recent_events"])}
     </section>
 
     <section class="section" style="margin-top:18px">
@@ -1067,6 +1436,12 @@ async def admin_api_overview(token: str = ""):
         "activity_top": data["activity_top"],
         "water_points": data["water_points"],
         "files": data["files"],
+        "field_context": data["field_context"],
+        "today_activities": data["today_activities"],
+        "financial_report": data["financial_report"],
+        "progress_report": data["progress_report"],
+        "problem_report": data["problem_report"],
+        "recent_photos": data["recent_photos"],
     }
     return JSONResponse(public)
 
