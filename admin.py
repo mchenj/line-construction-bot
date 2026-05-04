@@ -1148,6 +1148,133 @@ def _render_cockpit_cards(data: dict) -> str:
     """
 
 
+def _readiness_checks(data: dict) -> list[dict]:
+    ctx = data["field_context"]
+    latest = data.get("latest_daily") or {}
+    progress = data["progress_report"]
+    finance = data["financial_report"]
+    problem = data["problem_report"]
+    checks = [
+        {
+            "label": "Daily Report",
+            "ok": bool(latest),
+            "note": ctx["work_date"] or "No active daily report",
+        },
+        {
+            "label": "Activities",
+            "ok": bool(data["today_activities"]),
+            "note": f"{len(data['today_activities'])} items on active date",
+        },
+        {
+            "label": "Photo Evidence",
+            "ok": int(ctx["photo_count"] or 0) > 0,
+            "note": f"{ctx['photo_count']} photos in recent feed",
+        },
+        {
+            "label": "Workforce",
+            "ok": int(ctx["workers"] or 0) > 0,
+            "note": f"{ctx['workers']} workers / {ctx['engineers']} engineers",
+        },
+        {
+            "label": "Machinery",
+            "ok": int(ctx["equipment_count"] or 0) > 0,
+            "note": f"{ctx['equipment_count']} active units",
+        },
+        {
+            "label": "Cost Source",
+            "ok": bool(finance.get("connected")),
+            "note": finance.get("note") or "Financial source pending",
+        },
+        {
+            "label": "Schedule",
+            "ok": float(progress.get("variance_percent") or 0) >= 0,
+            "note": progress.get("headline") or "Progress source pending",
+        },
+        {
+            "label": "Risk Signals",
+            "ok": int(problem.get("count") or 0) == 0,
+            "note": f"{problem.get('count', 0)} warning keywords",
+            "warn": int(problem.get("count") or 0) > 0,
+        },
+    ]
+    return checks
+
+
+def _decision_items(data: dict) -> list[str]:
+    ctx = data["field_context"]
+    progress = data["progress_report"]
+    problem = data["problem_report"]
+    items = []
+    if int(problem.get("count") or 0) > 0:
+        items.append(f"Review {problem['count']} field issue signal(s) and assign an owner.")
+    if not data["today_activities"]:
+        items.append("Confirm today's activity log from the field team.")
+    if int(ctx["photo_count"] or 0) == 0:
+        items.append("Request field photo evidence for the current report cycle.")
+    if int(ctx["workers"] or 0) == 0:
+        items.append("Confirm workforce count before issuing the daily brief.")
+    if float(progress.get("variance_percent") or 0) < 0:
+        items.append("Prepare schedule recovery action because progress is behind plan.")
+    if not items:
+        items.append("No critical exception is flagged from the current dashboard data.")
+    return items[:4]
+
+
+def _render_admin_command_brief(data: dict) -> str:
+    ctx = data["field_context"]
+    progress = data["progress_report"]
+    finance = data["financial_report"]
+    problem = data["problem_report"]
+    checks = _readiness_checks(data)
+    decision_rows = "".join(f"<li>{escape(item)}</li>" for item in _decision_items(data))
+    check_rows = []
+    for check in checks:
+        cls = "warn" if check.get("warn") else "ok" if check["ok"] else "bad"
+        word = "Watch" if cls == "warn" else "Ready" if cls == "ok" else "Missing"
+        check_rows.append(
+            f"""
+            <div class="readiness-row {cls}">
+              <div><strong>{escape(check["label"])}</strong><span>{escape(check["note"])}</span></div>
+              <b>{word}</b>
+            </div>
+            """
+        )
+    return f"""
+    <section class="command-brief">
+      <article class="decision-panel">
+        <span class="eyebrow">Today's Decision</span>
+        <h2>{escape(ctx["work_date"] or "Live Project Control")}</h2>
+        <ol>{decision_rows}</ol>
+      </article>
+      <article class="readiness-panel">
+        <div class="panel-head">
+          <div>
+            <span class="eyebrow">Field Readiness</span>
+            <h2>Exception Check</h2>
+          </div>
+          <mark class="ok">{escape(problem["status"])}</mark>
+        </div>
+        <div class="readiness-list">{''.join(check_rows)}</div>
+      </article>
+      <article class="control-stat schedule">
+        <span>Schedule Health</span>
+        <strong>{escape(_signed_percent_label(progress["variance_percent"]))}</strong>
+        <small>{escape(progress["period_label"])}</small>
+      </article>
+      <article class="control-stat cost">
+        <span>Cost Health</span>
+        <strong>{escape(str(finance["headline"]).split()[0])}</strong>
+        <small>{escape(finance["spent_label"])} paid</small>
+      </article>
+      <article class="control-stat resource">
+        <span>Resources</span>
+        <strong>{escape(str(ctx["workers"]))} / {escape(str(ctx["equipment_count"]))}</strong>
+        <small>Workers / machines</small>
+      </article>
+    </section>
+    """
+
+
 def _render_photo_strip(photos: list[dict]) -> str:
     if not photos:
         return """
@@ -1193,7 +1320,11 @@ def _page_css() -> str:
       background: var(--page);
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--page); }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, #ededeb 0, var(--page) 420px, #d8d8d5 100%);
+    }
     a { color: inherit; }
     .shell { min-height: 100vh; }
     .topbar {
@@ -1239,6 +1370,75 @@ def _page_css() -> str:
     .dot.warn { background: var(--gold); }
     .dot.bad { background: var(--red); }
     main { padding: 24px clamp(18px, 3vw, 42px) 48px; }
+    .command-brief {
+      display: grid;
+      grid-template-columns: minmax(320px, 1.2fr) minmax(320px, 1fr) repeat(3, minmax(150px, .55fr));
+      gap: 14px;
+      margin-bottom: 18px;
+      align-items: stretch;
+    }
+    .decision-panel, .readiness-panel, .control-stat {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+    .decision-panel {
+      background: #181818;
+      color: #fff;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+    }
+    .decision-panel .eyebrow { color: var(--gold-soft); }
+    .decision-panel h2 { margin: 0; font-size: 26px; line-height: 1.15; letter-spacing: 0; }
+    .decision-panel ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+    .decision-panel li {
+      padding-left: 16px;
+      border-left: 3px solid var(--gold);
+      color: rgba(255,255,255,.86);
+      line-height: 1.42;
+      font-size: 14px;
+    }
+    .readiness-panel { background: rgba(255,255,255,.88); padding: 18px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 10px; }
+    .panel-head h2 { margin: 0; font-size: 18px; letter-spacing: 0; }
+    .readiness-list { display: grid; gap: 8px; }
+    .readiness-row {
+      display: grid;
+      grid-template-columns: 1fr 72px;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 0;
+      border-bottom: 1px solid rgba(23,23,23,.08);
+    }
+    .readiness-row:last-child { border-bottom: 0; }
+    .readiness-row strong { display: block; font-size: 13px; }
+    .readiness-row span { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; line-height: 1.35; }
+    .readiness-row b {
+      justify-self: end;
+      border-radius: 999px;
+      padding: 5px 8px;
+      background: #edf7f2;
+      color: #0f6d50;
+      font-size: 11px;
+    }
+    .readiness-row.warn b { background: #fff4d5; color: #7c4b06; }
+    .readiness-row.bad b { background: #fee2e2; color: #991b1b; }
+    .control-stat {
+      background: var(--panel);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border-top: 4px solid var(--red);
+    }
+    .control-stat.cost, .control-stat.resource { border-top-color: var(--gold); }
+    .control-stat span { color: var(--muted); font-size: 12px; }
+    .control-stat strong { display: block; font-size: 28px; line-height: 1; margin: 14px 0 8px; }
+    .control-stat small { color: var(--muted); line-height: 1.35; }
     .site-stage {
       display: grid;
       grid-template-columns: minmax(280px, 1fr) minmax(360px, .9fr);
@@ -1572,6 +1772,8 @@ def _page_css() -> str:
     .empty { color: var(--muted); margin: 14px 0 0; }
     .footnote { color: var(--muted); font-size: 12px; margin-top: 14px; }
     @media (max-width: 1120px) {
+      .command-brief { grid-template-columns: 1fr 1fr; }
+      .control-stat { min-height: 132px; }
       .metrics { grid-template-columns: repeat(3, 1fr); }
       .summary, .grid-2, .site-stage, .dashboard-grid { grid-template-columns: 1fr; }
       .cockpit-grid { grid-template-columns: 1fr 1fr; }
@@ -1579,6 +1781,7 @@ def _page_css() -> str:
     }
     @media (max-width: 720px) {
       .topbar { align-items: flex-start; flex-direction: column; }
+      .command-brief { grid-template-columns: 1fr; }
       .site-stage { padding: 18px; min-height: 0; }
       .site-copy h2 { font-size: 22px; }
       .site-visual { min-height: 300px; }
@@ -1655,6 +1858,16 @@ def _public_css() -> str:
     .public-brand b { display: block; font-size: 14px; letter-spacing: 0; }
     .public-brand span { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
     .public-pills { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
+    .public-links { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    .public-links a {
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 750;
+      padding: 8px 10px;
+      border-radius: 999px;
+    }
+    .public-links a:hover { background: rgba(255,255,255,.7); }
     .public-pill {
       display: inline-flex;
       align-items: center;
@@ -1680,7 +1893,9 @@ def _public_css() -> str:
     .public-hero-copy {
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--panel);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.82), rgba(248,248,245,.96)),
+        var(--panel);
       box-shadow: var(--shadow);
       padding: clamp(24px, 4vw, 46px);
       display: flex;
@@ -1712,6 +1927,22 @@ def _public_css() -> str:
       max-width: 680px;
       margin: 18px 0 0;
     }
+    .public-source {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 20px;
+    }
+    .public-source span {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.72);
+      color: var(--muted);
+      font-size: 12px;
+      padding: 7px 10px;
+    }
     .public-hero-bottom {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1726,6 +1957,27 @@ def _public_css() -> str:
     }
     .public-signal span { display: block; color: var(--muted); font-size: 12px; }
     .public-signal strong { display: block; margin-top: 6px; font-size: 20px; line-height: 1.22; overflow-wrap: anywhere; }
+    .public-exec-band {
+      display: grid;
+      grid-template-columns: 1.2fr repeat(3, minmax(160px, .7fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .public-exec-band article {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.82);
+      padding: 18px;
+      min-width: 0;
+    }
+    .public-exec-band article:first-child {
+      background: #171717;
+      color: #fff;
+    }
+    .public-exec-band span { display: block; color: var(--muted); font-size: 12px; }
+    .public-exec-band article:first-child span { color: var(--gold-soft); }
+    .public-exec-band strong { display: block; font-size: 24px; margin-top: 8px; line-height: 1.15; overflow-wrap: anywhere; }
+    .public-exec-band p { margin: 8px 0 0; color: rgba(255,255,255,.75); line-height: 1.45; }
     .public-visual {
       border-radius: 8px;
       border: 1px solid var(--line);
@@ -1810,6 +2062,15 @@ def _public_css() -> str:
       min-width: 0;
     }
     .public-panel h2 { margin: 0 0 14px; font-size: 16px; letter-spacing: 0; }
+    .public-panel-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .public-panel-head h2 { margin: 0; }
+    .public-panel-head span { color: var(--muted); font-size: 12px; white-space: nowrap; }
     .public-activity { list-style: none; padding: 0; margin: 0; display: grid; gap: 11px; }
     .public-activity li { display: grid; grid-template-columns: 42px 1fr; gap: 12px; align-items: start; }
     .public-activity b { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: var(--ink); color: #fff; font-size: 12px; }
@@ -1870,22 +2131,24 @@ def _public_css() -> str:
     .public-empty { color: var(--muted); margin: 0; line-height: 1.5; }
     @media (max-width: 1160px) {
       .public-hero, .public-grid { grid-template-columns: 1fr; }
+      .public-exec-band { grid-template-columns: 1fr 1fr; }
       .public-kpis { grid-template-columns: repeat(3, 1fr); }
       .public-visual { min-height: 440px; }
     }
     @media (max-width: 720px) {
       .public-nav { align-items: flex-start; flex-direction: column; }
+      .public-links { order: 3; }
       main { padding: 18px 14px 42px; }
       .public-hero { min-height: 0; }
       .public-hero-copy { padding: 22px; }
-      .public-hero-bottom, .public-kpis, .public-progress-meta { grid-template-columns: 1fr 1fr; }
+      .public-hero-bottom, .public-kpis, .public-progress-meta, .public-exec-band { grid-template-columns: 1fr 1fr; }
       .public-visual { min-height: 360px; }
       .public-photo-grid { grid-template-columns: 1fr 1fr; }
       .public-photo-grid figure:first-child { grid-column: 1 / -1; min-height: 260px; }
       .public-finance-row { grid-template-columns: 1fr; gap: 8px; }
     }
     @media (max-width: 460px) {
-      .public-kpis, .public-hero-bottom, .public-progress-meta { grid-template-columns: 1fr; }
+      .public-kpis, .public-hero-bottom, .public-progress-meta, .public-exec-band { grid-template-columns: 1fr; }
       .public-hero h1 { font-size: 28px; }
       .public-problem { grid-template-columns: 1fr; }
       .public-problem strong { width: 66px; }
@@ -1996,6 +2259,12 @@ def _render_public_page(data: dict) -> str:
         <span>Public construction dashboard</span>
       </div>
     </div>
+    <nav class="public-links" aria-label="Public sections">
+      <a href="#progress">Progress</a>
+      <a href="#finance">Finance</a>
+      <a href="#field">Field</a>
+      <a href="#photos">Photos</a>
+    </nav>
     <div class="public-pills">
       <span class="public-pill"><i class="public-dot"></i> Live report</span>
       <span class="public-pill">Updated {escape(data["generated_at"])}</span>
@@ -2009,6 +2278,11 @@ def _render_public_page(data: dict) -> str:
           <span class="public-eyebrow">Project Overview</span>
           <h1>{escape(PROJECT_DISPLAY_NAME)}</h1>
           <p class="public-lead">{escape(ctx["latest_text"])}</p>
+          <div class="public-source">
+            <span>Source: Construction Plan workbook</span>
+            <span>Daily field report</span>
+            <span>LINE photo evidence</span>
+          </div>
         </div>
         <div class="public-hero-bottom">
           <div class="public-signal">
@@ -2038,7 +2312,18 @@ def _render_public_page(data: dict) -> str:
       </div>
     </section>
 
-    <section class="public-kpis" aria-label="Project indicators">
+    <section class="public-exec-band" aria-label="Executive summary">
+      <article>
+        <span>Executive Read</span>
+        <strong>{escape(status_note)} / {escape(_signed_percent_label(progress["variance_percent"]))}</strong>
+        <p>{escape(progress["period_label"])} from the latest approved progress table.</p>
+      </article>
+      <article><span>Contract Value</span><strong>{escape(finance["budget_label"])}</strong></article>
+      <article><span>Paid To Date</span><strong>{escape(finance["spent_label"])}</strong></article>
+      <article><span>Field Force</span><strong>{escape(str(ctx["workers"]))} workers</strong></article>
+    </section>
+
+    <section id="progress" class="public-kpis" aria-label="Project indicators">
       <article class="public-kpi hot"><span>Actual Progress</span><strong>{escape(_percent_label(progress["actual_percent"]))}</strong><small>{escape(progress["period_label"])}</small></article>
       <article class="public-kpi"><span>Plan</span><strong>{escape(_percent_label(progress["plan_percent"]))}</strong><small>Week {escape(str(progress["week_no"] or "-"))}</small></article>
       <article class="public-kpi gold"><span>Disbursed</span><strong>{escape(str(finance["headline"]).split()[0])}</strong><small>{escape(finance["spent_label"])} paid</small></article>
@@ -2047,20 +2332,20 @@ def _render_public_page(data: dict) -> str:
       <article class="public-kpi gold"><span>Machines</span><strong>{escape(str(ctx["equipment_count"]))}</strong><small>Latest daily report</small></article>
     </section>
 
-    <section class="public-grid">
+    <section id="field" class="public-grid">
       <div class="public-panel">
-        <h2>Today On Site</h2>
+        <div class="public-panel-head"><h2>Today On Site</h2><span>{escape(ctx["work_date"] or "Live")}</span></div>
         {_render_public_activity(data["today_activities"])}
       </div>
-      <div class="public-panel">
-        <h2>Financial Snapshot</h2>
+      <div id="finance" class="public-panel">
+        <div class="public-panel-head"><h2>Financial Snapshot</h2><span>{escape(finance["note"])}</span></div>
         {_render_public_finance(finance)}
       </div>
     </section>
 
     <section class="public-grid">
       <div class="public-panel">
-        <h2>Problem Watch</h2>
+        <div class="public-panel-head"><h2>Problem Watch</h2><span>{escape(problem["status"])}</span></div>
         <div class="public-problem">
           <strong>{escape(str(problem["count"]))}</strong>
           <div>
@@ -2069,8 +2354,8 @@ def _render_public_page(data: dict) -> str:
           </div>
         </div>
       </div>
-      <div class="public-panel">
-        <h2>Recent Field Photos</h2>
+      <div id="photos" class="public-panel">
+        <div class="public-panel-head"><h2>Recent Field Photos</h2><span>Latest evidence</span></div>
         {_render_public_photos(photos)}
       </div>
     </section>
@@ -2121,6 +2406,7 @@ def _render_admin_page(data: dict, token: str) -> str:
   </header>
 
   <main>
+    {_render_admin_command_brief(data)}
     {_render_site_visual(data)}
     {_render_cockpit_cards(data)}
 
