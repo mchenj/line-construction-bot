@@ -38,11 +38,12 @@ except ImportError:
     _SCHEDULER_AVAILABLE = False
     start_scheduler = stop_scheduler = lambda: None
 try:
-    from admin import router as admin_router
+    from admin import public_router, router as admin_router
     _ADMIN_AVAILABLE = True
 except ImportError:
     _ADMIN_AVAILABLE = False
     admin_router = None
+    public_router = None
 
 LINE_CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -78,6 +79,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LINE Construction Report Bot", version="4.1.0", lifespan=lifespan)
 if _ADMIN_AVAILABLE:
     app.include_router(admin_router)
+    app.include_router(public_router)
 last_text_by_user: dict[str, dict] = {}
 # state สำหรับ /upload_plan และ /upload_cm — {user_id: ("plan"|"cm", expires_datetime)}
 upload_intent: dict[str, tuple] = {}

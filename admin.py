@@ -50,6 +50,7 @@ PLAN_BUDGET_SHEET = "การเบิกจ่ายงบประมาณ"
 PLAN_PROGRESS_SHEET = "แผน - ผล ประจำสัปดาห์"
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+public_router = APIRouter(tags=["public"])
 
 
 def _now_bkk() -> datetime:
@@ -1605,6 +1606,481 @@ def _page_css() -> str:
     """
 
 
+def _public_css() -> str:
+    return """
+    :root {
+      --ink: #141414;
+      --muted: #73777c;
+      --page: #e4e4e1;
+      --panel: #f8f8f5;
+      --white: #ffffff;
+      --line: rgba(20,20,20,.11);
+      --red: #b51f1a;
+      --red-dark: #5a1210;
+      --gold: #c89325;
+      --gold-soft: #f2d27e;
+      --green: #12966e;
+      --shadow: 0 24px 70px rgba(20,20,20,.14);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--page);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); }
+    .public-shell { min-height: 100vh; }
+    .public-nav {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      padding: 16px clamp(18px, 4vw, 54px);
+      background: rgba(231,231,228,.86);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--line);
+    }
+    .public-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .public-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      background:
+        linear-gradient(145deg, var(--red) 0 44%, transparent 45%),
+        linear-gradient(145deg, var(--gold) 0 74%, #171717 75%);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.54);
+      flex: 0 0 auto;
+    }
+    .public-brand b { display: block; font-size: 14px; letter-spacing: 0; }
+    .public-brand span { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .public-pills { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
+    .public-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.64);
+      padding: 8px 11px;
+      color: var(--ink);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .public-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
+    main { padding: 24px clamp(18px, 4vw, 54px) 54px; }
+    .public-hero {
+      min-height: min(680px, calc(100vh - 112px));
+      display: grid;
+      grid-template-columns: minmax(320px, .92fr) minmax(420px, 1.08fr);
+      gap: 20px;
+      align-items: stretch;
+      margin-bottom: 20px;
+    }
+    .public-hero-copy {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: clamp(24px, 4vw, 46px);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 28px;
+      min-width: 0;
+    }
+    .public-eyebrow {
+      display: block;
+      color: var(--red);
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .public-hero h1 {
+      margin: 0;
+      font-size: clamp(30px, 4.2vw, 58px);
+      line-height: 1.08;
+      letter-spacing: 0;
+      max-width: 860px;
+    }
+    .public-lead {
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.65;
+      max-width: 680px;
+      margin: 18px 0 0;
+    }
+    .public-hero-bottom {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .public-signal {
+      background: #ecece8;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+    }
+    .public-signal span { display: block; color: var(--muted); font-size: 12px; }
+    .public-signal strong { display: block; margin-top: 6px; font-size: 20px; line-height: 1.22; overflow-wrap: anywhere; }
+    .public-visual {
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      background: #d9d9d5;
+      min-height: 520px;
+      overflow: hidden;
+      position: relative;
+    }
+    .public-visual img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(.92) contrast(.98); }
+    .public-visual-fallback {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(145deg, rgba(181,31,26,.16), transparent 38%),
+        linear-gradient(18deg, rgba(200,147,37,.24), transparent 48%),
+        #dededb;
+    }
+    .public-visual-fallback i,
+    .public-visual-fallback span {
+      position: absolute;
+      display: block;
+      border-radius: 8px;
+      background: rgba(255,255,255,.58);
+      border: 1px solid rgba(20,20,20,.06);
+    }
+    .public-visual-fallback i:nth-child(1) { width: 72%; height: 12%; left: 13%; top: 22%; transform: rotate(-7deg); }
+    .public-visual-fallback i:nth-child(2) { width: 48%; height: 16%; right: 7%; top: 48%; transform: rotate(8deg); }
+    .public-visual-fallback i:nth-child(3) { width: 68%; height: 13%; left: 10%; bottom: 20%; transform: rotate(-3deg); }
+    .public-visual-fallback span { left: 20%; bottom: 30%; width: 46%; height: 7px; background: var(--ink); opacity: .82; }
+    .public-hero-card {
+      position: absolute;
+      right: 18px;
+      bottom: 18px;
+      width: min(360px, calc(100% - 36px));
+      border-radius: 8px;
+      background: rgba(255,255,255,.82);
+      border: 1px solid rgba(255,255,255,.76);
+      backdrop-filter: blur(16px);
+      padding: 16px;
+      box-shadow: 0 18px 50px rgba(20,20,20,.16);
+    }
+    .public-progress-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .public-progress-head span { color: var(--muted); font-size: 12px; }
+    .public-progress-head strong { color: var(--red); font-size: 14px; text-align: right; }
+    .public-progress-line { height: 10px; border-radius: 999px; background: #e5e1d9; overflow: hidden; margin-bottom: 13px; }
+    .public-progress-line i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--red), var(--gold)); }
+    .public-progress-meta { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .public-progress-meta span { color: var(--muted); font-size: 11px; display: block; }
+    .public-progress-meta b { display: block; margin-top: 4px; font-size: 16px; }
+    .public-kpis {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .public-kpi {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--white);
+      padding: 16px;
+      min-height: 118px;
+    }
+    .public-kpi span { color: var(--muted); font-size: 12px; display: block; }
+    .public-kpi strong { font-size: 28px; line-height: 1; display: block; margin: 11px 0 7px; }
+    .public-kpi small { color: var(--muted); line-height: 1.35; display: block; }
+    .public-kpi.hot { border-top: 4px solid var(--red); }
+    .public-kpi.gold { border-top: 4px solid var(--gold); }
+    .public-grid {
+      display: grid;
+      grid-template-columns: minmax(320px, .94fr) minmax(420px, 1.06fr);
+      gap: 20px;
+      margin-bottom: 20px;
+      align-items: start;
+    }
+    .public-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--white);
+      box-shadow: 0 14px 44px rgba(20,20,20,.08);
+      padding: 20px;
+      min-width: 0;
+    }
+    .public-panel h2 { margin: 0 0 14px; font-size: 16px; letter-spacing: 0; }
+    .public-activity { list-style: none; padding: 0; margin: 0; display: grid; gap: 11px; }
+    .public-activity li { display: grid; grid-template-columns: 42px 1fr; gap: 12px; align-items: start; }
+    .public-activity b { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: var(--ink); color: #fff; font-size: 12px; }
+    .public-activity span { color: var(--red); font-size: 12px; font-weight: 850; }
+    .public-activity p { margin: 3px 0 0; line-height: 1.45; color: var(--ink); }
+    .public-finance { display: grid; gap: 10px; }
+    .public-finance-row {
+      display: grid;
+      grid-template-columns: minmax(95px, 1fr) minmax(160px, 2fr);
+      gap: 14px;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .public-finance-row:last-child { border-bottom: 0; }
+    .public-finance-row span { color: var(--muted); font-size: 12px; }
+    .public-finance-row strong { display: block; margin-top: 2px; }
+    .public-bar { height: 9px; border-radius: 999px; background: #ebe7de; overflow: hidden; }
+    .public-bar i { display: block; height: 100%; border-radius: inherit; background: var(--gold); }
+    .public-photo-grid {
+      display: grid;
+      grid-template-columns: 1.3fr repeat(2, .85fr);
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .public-photo-grid figure { margin: 0; min-width: 0; }
+    .public-photo-grid img, .public-photo-grid figure > div {
+      width: 100%;
+      aspect-ratio: 1.12;
+      object-fit: cover;
+      display: block;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #e8e8e4, #cfcfca);
+      border: 1px solid var(--line);
+    }
+    .public-photo-grid figure:first-child { grid-row: span 2; }
+    .public-photo-grid figure:first-child img,
+    .public-photo-grid figure:first-child > div { height: 100%; aspect-ratio: auto; }
+    .public-photo-grid figcaption { color: var(--muted); font-size: 12px; margin-top: 7px; line-height: 1.35; }
+    .public-problem {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      gap: 16px;
+      align-items: center;
+    }
+    .public-problem strong {
+      width: 84px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #f7ebe5;
+      color: var(--red);
+      font-size: 34px;
+    }
+    .public-problem span { color: var(--red); font-size: 12px; text-transform: uppercase; font-weight: 850; }
+    .public-problem p { margin: 5px 0 0; line-height: 1.48; color: var(--ink); }
+    .public-empty { color: var(--muted); margin: 0; line-height: 1.5; }
+    @media (max-width: 1160px) {
+      .public-hero, .public-grid { grid-template-columns: 1fr; }
+      .public-kpis { grid-template-columns: repeat(3, 1fr); }
+      .public-visual { min-height: 440px; }
+    }
+    @media (max-width: 720px) {
+      .public-nav { align-items: flex-start; flex-direction: column; }
+      main { padding: 18px 14px 42px; }
+      .public-hero { min-height: 0; }
+      .public-hero-copy { padding: 22px; }
+      .public-hero-bottom, .public-kpis, .public-progress-meta { grid-template-columns: 1fr 1fr; }
+      .public-visual { min-height: 360px; }
+      .public-photo-grid { grid-template-columns: 1fr 1fr; }
+      .public-photo-grid figure:first-child { grid-column: 1 / -1; min-height: 260px; }
+      .public-finance-row { grid-template-columns: 1fr; gap: 8px; }
+    }
+    @media (max-width: 460px) {
+      .public-kpis, .public-hero-bottom, .public-progress-meta { grid-template-columns: 1fr; }
+      .public-hero h1 { font-size: 28px; }
+      .public-problem { grid-template-columns: 1fr; }
+      .public-problem strong { width: 66px; }
+    }
+    """
+
+
+def _render_public_activity(items: list[dict]) -> str:
+    if not items:
+        return '<p class="public-empty">No field activity has been posted for the active report date yet.</p>'
+    html = []
+    for item in items[:5]:
+        html.append(
+            f"""
+            <li>
+              <b>{escape(str(item["seq"]).zfill(2))}</b>
+              <div>
+                <span>{escape(item["type"])}</span>
+                <p>{escape(item["text"])}</p>
+              </div>
+            </li>
+            """
+        )
+    return '<ol class="public-activity">' + "".join(html) + "</ol>"
+
+
+def _render_public_photos(photos: list[dict]) -> str:
+    cards = []
+    for photo in photos[:5]:
+        visual = (
+            f'<img src="{escape(str(photo["url"]))}" alt="{escape(photo["caption"])}">'
+            if photo.get("url")
+            else "<div></div>"
+        )
+        cards.append(
+            f"""
+            <figure>
+              {visual}
+              <figcaption>{escape(photo["caption"])}</figcaption>
+            </figure>
+            """
+        )
+    while len(cards) < 5:
+        cards.append("<figure><div></div><figcaption>Field photo pending</figcaption></figure>")
+    return '<div class="public-photo-grid">' + "".join(cards) + "</div>"
+
+
+def _render_public_finance(finance: dict) -> str:
+    rows = [
+        ("Budget", finance.get("budget_label", "-"), 100),
+        ("Disbursed", finance.get("spent_label", "-"), finance.get("percent", 0)),
+        ("Balance", finance.get("remaining_label", "-"), max(0, 100 - float(finance.get("percent") or 0))),
+    ]
+    html = []
+    for label, value, width in rows:
+        html.append(
+            f"""
+            <div class="public-finance-row">
+              <div><span>{escape(label)}</span><strong>{escape(str(value))}</strong></div>
+              <div class="public-bar"><i style="width:{max(0, min(100, float(width))):.1f}%"></i></div>
+            </div>
+            """
+        )
+    return '<div class="public-finance">' + "".join(html) + "</div>"
+
+
+def _public_api_payload(data: dict) -> dict:
+    return {
+        "generated_at": data["generated_at"],
+        "project_name": data["env"]["project_name"],
+        "field_context": data["field_context"],
+        "today_activities": data["today_activities"],
+        "financial_report": data["financial_report"],
+        "progress_report": data["progress_report"],
+        "problem_report": data["problem_report"],
+        "recent_photos": data["recent_photos"],
+    }
+
+
+def _render_public_page(data: dict) -> str:
+    ctx = data["field_context"]
+    finance = data["financial_report"]
+    progress = data["progress_report"]
+    problem = data["problem_report"]
+    photos = data["recent_photos"]
+    hero_photo = next((p for p in photos if p.get("url")), None)
+    visual = (
+        f'<img src="{escape(str(hero_photo["url"]))}" alt="{escape(hero_photo["caption"])}">'
+        if hero_photo
+        else '<div class="public-visual-fallback"><i></i><i></i><i></i><span></span></div>'
+    )
+    status_note = "Ahead of plan" if progress["variance_percent"] > 0 else "Behind plan" if progress["variance_percent"] < 0 else "On plan"
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hua Ro Project Status</title>
+  <style>{_public_css()}</style>
+</head>
+<body>
+<div class="public-shell">
+  <header class="public-nav">
+    <div class="public-brand">
+      <div class="public-mark" aria-hidden="true"></div>
+      <div>
+        <b>Hua Ro Project Status</b>
+        <span>Public construction dashboard</span>
+      </div>
+    </div>
+    <div class="public-pills">
+      <span class="public-pill"><i class="public-dot"></i> Live report</span>
+      <span class="public-pill">Updated {escape(data["generated_at"])}</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="public-hero">
+      <div class="public-hero-copy">
+        <div>
+          <span class="public-eyebrow">Project Overview</span>
+          <h1>{escape(PROJECT_DISPLAY_NAME)}</h1>
+          <p class="public-lead">{escape(ctx["latest_text"])}</p>
+        </div>
+        <div class="public-hero-bottom">
+          <div class="public-signal">
+            <span>Current field date</span>
+            <strong>{escape(ctx["work_date"] or "Waiting for report")}</strong>
+          </div>
+          <div class="public-signal">
+            <span>Site condition</span>
+            <strong>{escape(ctx["weather"])} · Water {escape(ctx["water"] or "-")}</strong>
+          </div>
+        </div>
+      </div>
+      <div class="public-visual">
+        {visual}
+        <div class="public-hero-card">
+          <div class="public-progress-head">
+            <span>Construction progress</span>
+            <strong>{escape(status_note)}</strong>
+          </div>
+          <div class="public-progress-line"><i style="width:{max(0, min(100, int(progress["percent"])))}%"></i></div>
+          <div class="public-progress-meta">
+            <div><span>Plan</span><b>{escape(_percent_label(progress["plan_percent"]))}</b></div>
+            <div><span>Actual</span><b>{escape(_percent_label(progress["actual_percent"]))}</b></div>
+            <div><span>Variance</span><b>{escape(_signed_percent_label(progress["variance_percent"]))}</b></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="public-kpis" aria-label="Project indicators">
+      <article class="public-kpi hot"><span>Actual Progress</span><strong>{escape(_percent_label(progress["actual_percent"]))}</strong><small>{escape(progress["period_label"])}</small></article>
+      <article class="public-kpi"><span>Plan</span><strong>{escape(_percent_label(progress["plan_percent"]))}</strong><small>Week {escape(str(progress["week_no"] or "-"))}</small></article>
+      <article class="public-kpi gold"><span>Disbursed</span><strong>{escape(str(finance["headline"]).split()[0])}</strong><small>{escape(finance["spent_label"])} paid</small></article>
+      <article class="public-kpi"><span>Workers</span><strong>{escape(str(ctx["workers"]))}</strong><small>Latest daily report</small></article>
+      <article class="public-kpi"><span>Engineers</span><strong>{escape(str(ctx["engineers"]))}</strong><small>Latest daily report</small></article>
+      <article class="public-kpi gold"><span>Machines</span><strong>{escape(str(ctx["equipment_count"]))}</strong><small>Latest daily report</small></article>
+    </section>
+
+    <section class="public-grid">
+      <div class="public-panel">
+        <h2>Today On Site</h2>
+        {_render_public_activity(data["today_activities"])}
+      </div>
+      <div class="public-panel">
+        <h2>Financial Snapshot</h2>
+        {_render_public_finance(finance)}
+      </div>
+    </section>
+
+    <section class="public-grid">
+      <div class="public-panel">
+        <h2>Problem Watch</h2>
+        <div class="public-problem">
+          <strong>{escape(str(problem["count"]))}</strong>
+          <div>
+            <span>{escape(problem["status"])}</span>
+            <p>{escape(problem["latest"]["text"])}</p>
+          </div>
+        </div>
+      </div>
+      <div class="public-panel">
+        <h2>Recent Field Photos</h2>
+        {_render_public_photos(photos)}
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>"""
+    return html
+
+
 def _render_admin_page(data: dict, token: str) -> str:
     token_q = quote(token, safe="")
     env = data["env"]
@@ -1724,6 +2200,16 @@ def _render_admin_page(data: dict, token: str) -> str:
 </body>
 </html>"""
     return html
+
+
+@public_router.get("/project", response_class=HTMLResponse)
+async def public_project_home():
+    return HTMLResponse(_render_public_page(_collect_dashboard()))
+
+
+@public_router.get("/project/api")
+async def public_project_api():
+    return JSONResponse(_public_api_payload(_collect_dashboard()))
 
 
 @router.get("", response_class=HTMLResponse)
