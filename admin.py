@@ -22,7 +22,7 @@ from html import escape
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 try:
@@ -198,6 +198,9 @@ def _collect_dashboard() -> dict:
         "line_reports": [],
         "activities": [],
         "images": [],
+        "issues": [],
+        "issue_comments": [],
+        "issues_error": None,
     }
 
     if client is not None:
@@ -255,6 +258,33 @@ def _collect_dashboard() -> dict:
         if err:
             data["query_errors"].append(err)
 
+        issues, err = _safe_query(
+            "project_issues",
+            lambda: client.table("project_issues")
+            .select(
+                "id,created_at,updated_at,work_date,title,description,area,owner,"
+                "due_date,status,impact,next_action,source_channel,source_id"
+            )
+            .order("created_at", desc=True)
+            .limit(80)
+            .execute(),
+        )
+        data["issues"] = issues
+        if err:
+            data["issues_error"] = err
+
+        comments, err = _safe_query(
+            "project_issue_comments",
+            lambda: client.table("project_issue_comments")
+            .select("id,issue_id,created_at,author,comment")
+            .order("created_at", desc=True)
+            .limit(120)
+            .execute(),
+        )
+        data["issue_comments"] = comments
+        if err and not data["issues_error"]:
+            data["issues_error"] = err
+
         data["db_ok"] = any([daily, line_reports, activities, images]) or not data["query_errors"]
         if data["db_ok"]:
             data["db_error"] = None
@@ -269,6 +299,8 @@ def _summarize_dashboard(data: dict, start_14: date, start_30: date) -> dict:
     daily = data["daily"]
     activities = data["activities"]
     images = data["images"]
+    issues = data.get("issues") or []
+    issue_comments = data.get("issue_comments") or []
 
     by_day = {start_14 + timedelta(days=i): {"reports": 0, "workers": 0, "images": 0} for i in range(14)}
     recent_by_type = Counter()
@@ -317,10 +349,11 @@ def _summarize_dashboard(data: dict, start_14: date, start_30: date) -> dict:
     if latest_daily:
         active_date = _parse_date(latest_daily.get("work_date")) or today
     today_activities = _activity_items_for_date(activities, active_date)
-    problem_report = _problem_report(activities, line_reports)
+    problem_report = _problem_report(activities, line_reports, issues)
     financial_report = _financial_report()
     progress_report = _progress_report(daily, activities, images, latest_daily)
     field_context = _field_context(line_reports, latest_daily, today_activities, images)
+    issue_board = _issue_board(issues, issue_comments, today)
 
     plan_ok = data["files"]["plan"]["exists"]
     cm_ok = data["files"]["cm"]["exists"]
@@ -345,6 +378,7 @@ def _summarize_dashboard(data: dict, start_14: date, start_30: date) -> dict:
             "photos_30d": len(images),
             "worker_total_7d": worker_total_7d,
             "activity_types": len(activity_counts),
+            "open_issues": issue_board["open_count"],
         },
         "latest_daily": latest_daily,
         "daily_series": [
@@ -366,6 +400,7 @@ def _summarize_dashboard(data: dict, start_14: date, start_30: date) -> dict:
         "financial_report": financial_report,
         "progress_report": progress_report,
         "problem_report": problem_report,
+        "issue_board": issue_board,
         "recent_photos": _recent_photos(images),
     }
 
@@ -433,7 +468,69 @@ def _field_context(line_reports: list[dict], latest_daily: dict | None, activiti
     }
 
 
-def _problem_report(activities: list[dict], line_reports: list[dict]) -> dict:
+def _open_issue_rows(issues: list[dict]) -> list[dict]:
+    return [
+        row for row in issues
+        if str(row.get("status") or "open").lower() not in {"resolved", "closed"}
+    ]
+
+
+def _issue_board(issues: list[dict], comments: list[dict], today: date) -> dict:
+    open_rows = _open_issue_rows(issues)
+    by_status = Counter(str(row.get("status") or "open").lower() for row in issues)
+    by_impact = Counter(str(row.get("impact") or "medium").lower() for row in open_rows)
+    overdue = []
+    due_soon = []
+    for row in open_rows:
+        due = _parse_date(row.get("due_date"))
+        if not due:
+            continue
+        if due < today:
+            overdue.append(row)
+        elif due <= today + timedelta(days=3):
+            due_soon.append(row)
+
+    comments_by_issue: dict[int, list[dict]] = {}
+    for comment in comments:
+        issue_id = comment.get("issue_id")
+        if issue_id is None:
+            continue
+        try:
+            issue_id = int(issue_id)
+        except Exception:
+            continue
+        comments_by_issue.setdefault(issue_id, []).append(comment)
+
+    return {
+        "issues": issues,
+        "open_issues": open_rows,
+        "comments_by_issue": comments_by_issue,
+        "open_count": len(open_rows),
+        "total_count": len(issues),
+        "overdue_count": len(overdue),
+        "due_soon_count": len(due_soon),
+        "by_status": dict(by_status),
+        "by_impact": dict(by_impact),
+        "source_ready": not bool(issues is None),
+    }
+
+
+def _problem_report(activities: list[dict], line_reports: list[dict], issues: list[dict] | None = None) -> dict:
+    open_issues = _open_issue_rows(issues or [])
+    if open_issues:
+        latest = open_issues[0]
+        status = "Attention"
+        if len(open_issues) <= 2:
+            status = "Watch"
+        return {
+            "count": len(open_issues),
+            "status": status,
+            "latest": {
+                "date": str(latest.get("work_date") or ""),
+                "text": _short(latest.get("title") or latest.get("description") or "Open project issue.", 120),
+            },
+        }
+
     keywords = (
         "problem", "issue", "risk", "delay", "blocked", "struggle",
         "ปัญหา", "ล่าช้า", "ติด", "ขัดข้อง", "เสีย", "รอ", "แก้ไข",
@@ -1275,6 +1372,131 @@ def _render_admin_command_brief(data: dict) -> str:
     """
 
 
+def _issue_status_label(status: object) -> str:
+    text = str(status or "open").replace("_", " ").strip().title()
+    return text or "Open"
+
+
+def _issue_badge_class(row: dict) -> str:
+    status = str(row.get("status") or "open").lower()
+    impact = str(row.get("impact") or "medium").lower()
+    due = _parse_date(row.get("due_date"))
+    today = _now_bkk().date()
+    if status in {"resolved", "closed"}:
+        return "ok"
+    if due and due < today:
+        return "bad"
+    if impact in {"high", "critical"} or status == "waiting":
+        return "warn"
+    return "open"
+
+
+def _render_problem_board(data: dict, token_q: str) -> str:
+    board = data.get("issue_board") or {}
+    issues = board.get("open_issues") or []
+    comments_by_issue = board.get("comments_by_issue") or {}
+    setup_note = ""
+    if data.get("issues_error"):
+        setup_note = (
+            '<div class="error">Problem board table is not connected yet. '
+            'Run setup_problem_board.sql in Supabase SQL Editor.</div>'
+        )
+
+    issue_cards = []
+    for row in issues[:8]:
+        issue_id = int(row.get("id") or 0)
+        comments = comments_by_issue.get(issue_id, [])
+        latest_comment = comments[0] if comments else None
+        due = str(row.get("due_date") or "No due date")
+        owner = str(row.get("owner") or "")
+        cls = _issue_badge_class(row)
+        latest_comment_html = ""
+        if latest_comment:
+            latest_comment_html = (
+                f'<p class="issue-comment">{escape(_short(latest_comment.get("comment"), 100))}</p>'
+            )
+        issue_cards.append(
+            f"""
+            <article class="issue-card {cls}">
+              <div class="issue-main">
+                <div>
+                  <span class="issue-meta">{escape(str(row.get("area") or "Project"))} · {escape(due)}</span>
+                  <h3>{escape(_short(row.get("title") or row.get("description") or "Untitled issue", 92))}</h3>
+                  <p>{escape(_short(row.get("next_action") or row.get("description") or "No next action recorded.", 130))}</p>
+                  {latest_comment_html}
+                </div>
+                <mark class="{cls}">{escape(_issue_status_label(row.get("status")))}</mark>
+              </div>
+              <form class="issue-update" action="/admin/issues/{issue_id}/update?token={token_q}" method="post">
+                <input type="text" name="owner" value="{escape(owner)}" placeholder="Owner" aria-label="Owner">
+                <input type="date" name="due_date" value="{escape(str(row.get("due_date") or ""))}" aria-label="Due date">
+                <select name="status" aria-label="Status">
+                  {_status_options(str(row.get("status") or "open"))}
+                </select>
+                <input type="text" name="next_action" value="{escape(str(row.get("next_action") or ""))}" placeholder="Next action">
+                <button type="submit">Update</button>
+              </form>
+              <form class="issue-comment-form" action="/admin/issues/{issue_id}/comment?token={token_q}" method="post">
+                <input type="text" name="comment" placeholder="Add discussion note">
+                <button type="submit">Comment</button>
+              </form>
+            </article>
+            """
+        )
+
+    if not issue_cards:
+        issue_cards.append(
+            """
+            <article class="issue-card empty-board">
+              <h3>No open project issues</h3>
+              <p>LINE issue reports and web-created decisions will appear here.</p>
+            </article>
+            """
+        )
+
+    return f"""
+    <section class="section problem-board">
+      <div class="split-head">
+        <div>
+          <h2>Problem & Decision Board</h2>
+          <p class="section-lead">LINE reports create issues automatically; admin uses this board to assign, discuss and close them.</p>
+        </div>
+        <span class="pill">{escape(str(board.get("open_count", 0)))} open · {escape(str(board.get("overdue_count", 0)))} overdue</span>
+      </div>
+      {setup_note}
+      <form class="issue-create" action="/admin/issues/create?token={token_q}" method="post">
+        <input type="text" name="title" placeholder="Problem / decision title" required>
+        <input type="text" name="area" placeholder="Area">
+        <input type="text" name="owner" placeholder="Owner">
+        <input type="date" name="due_date" aria-label="Due date">
+        <select name="impact" aria-label="Impact">
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+          <option value="high">High</option>
+          <option value="critical">Critical</option>
+        </select>
+        <input type="text" name="next_action" placeholder="Next action">
+        <button class="primary" type="submit">Add Issue</button>
+      </form>
+      <div class="issue-grid">{''.join(issue_cards)}</div>
+    </section>
+    """
+
+
+def _status_options(current: str) -> str:
+    statuses = [
+        ("open", "Open"),
+        ("in_progress", "In Progress"),
+        ("waiting", "Waiting"),
+        ("resolved", "Resolved"),
+        ("closed", "Closed"),
+    ]
+    return "".join(
+        f'<option value="{value}"{" selected" if value == current else ""}>{label}</option>'
+        for value, label in statuses
+    )
+
+
 def _render_photo_strip(photos: list[dict]) -> str:
     if not photos:
         return """
@@ -1615,6 +1837,50 @@ def _page_css() -> str:
     .metric small { color: var(--muted); line-height: 1.35; display: block; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
     .section { padding: 18px; min-width: 0; }
+    .section-lead { color: var(--muted); margin: 6px 0 0; line-height: 1.4; font-size: 13px; }
+    .problem-board { margin: 18px 0; }
+    .issue-create {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.4fr) repeat(4, minmax(110px, .7fr)) minmax(180px, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      margin-top: 16px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+    }
+    .issue-grid { display: grid; gap: 10px; margin-top: 14px; }
+    .issue-card {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--gold);
+      border-radius: 8px;
+      background: #fff;
+      padding: 14px;
+      min-width: 0;
+    }
+    .issue-card.bad { border-left-color: var(--red); background: #fffafa; }
+    .issue-card.warn { border-left-color: var(--gold); }
+    .issue-card.ok { border-left-color: var(--green); }
+    .issue-main {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: start;
+      margin-bottom: 12px;
+    }
+    .issue-meta { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+    .issue-card h3 { margin: 0; font-size: 17px; line-height: 1.25; }
+    .issue-card p { margin: 7px 0 0; color: var(--muted); line-height: 1.45; }
+    .issue-comment { color: var(--ink); background: #f7f4ed; padding: 8px 10px; border-radius: 8px; }
+    .issue-update, .issue-comment-form {
+      display: grid;
+      grid-template-columns: 150px 150px 140px minmax(180px, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .issue-comment-form { grid-template-columns: 1fr auto; margin-top: 8px; }
+    .empty-board { text-align: left; }
     .flow {
       display: grid;
       grid-template-columns: repeat(5, minmax(140px, 1fr));
@@ -1682,6 +1948,18 @@ def _page_css() -> str:
     mark.bad { background: #fee2e2; color: #991b1b; }
     .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .actions form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"], input[type="date"], select {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      padding: 7px 10px;
+      font: inherit;
+      font-size: 13px;
+      min-width: 0;
+    }
     input[type="file"] {
       max-width: 210px;
       font-size: 12px;
@@ -1792,6 +2070,8 @@ def _page_css() -> str:
       .photo-strip { grid-template-columns: 1fr 1fr; }
       .bar-row { grid-template-columns: 1fr 54px; }
       .bar-row .bar-track { grid-column: 1 / -1; order: 3; }
+      .issue-create, .issue-update { grid-template-columns: 1fr 1fr; }
+      .issue-create button, .issue-update button, .issue-comment-form { grid-column: 1 / -1; }
       table, thead, tbody, tr, th, td { display: block; }
       thead { display: none; }
       tr { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; background: #fff; }
@@ -1805,6 +2085,8 @@ def _page_css() -> str:
       .compact-stats { grid-template-columns: 1fr; }
       .mini-card { min-width: 84px; padding: 10px; }
       .mini-card strong { font-size: 24px; }
+      .issue-create, .issue-update, .issue-comment-form { grid-template-columns: 1fr; }
+      .issue-main { grid-template-columns: 1fr; }
     }
     """
 
@@ -2124,7 +2406,8 @@ def _public_css() -> str:
       border-radius: 8px;
       background: #f7ebe5;
       color: var(--red);
-      font-size: 34px;
+      font-size: 24px;
+      letter-spacing: 0;
     }
     .public-problem span { color: var(--red); font-size: 12px; text-transform: uppercase; font-weight: 850; }
     .public-problem p { margin: 5px 0 0; line-height: 1.48; color: var(--ink); }
@@ -2241,6 +2524,13 @@ def _render_public_page(data: dict) -> str:
         else '<div class="public-visual-fallback"><i></i><i></i><i></i><span></span></div>'
     )
     status_note = "Ahead of plan" if progress["variance_percent"] > 0 else "Behind plan" if progress["variance_percent"] < 0 else "On plan"
+    public_watch_status = "Clear" if int(problem.get("count") or 0) == 0 else "Under Review"
+    public_watch_mark = "OK" if int(problem.get("count") or 0) == 0 else "TRACK"
+    public_watch_text = (
+        "No public-facing risk signal is currently shown on this page."
+        if int(problem.get("count") or 0) == 0
+        else "Field actions are being tracked internally by the project control team."
+    )
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2345,12 +2635,12 @@ def _render_public_page(data: dict) -> str:
 
     <section class="public-grid">
       <div class="public-panel">
-        <div class="public-panel-head"><h2>Problem Watch</h2><span>{escape(problem["status"])}</span></div>
+        <div class="public-panel-head"><h2>Governance Watch</h2><span>{escape(public_watch_status)}</span></div>
         <div class="public-problem">
-          <strong>{escape(str(problem["count"]))}</strong>
+          <strong>{escape(public_watch_mark)}</strong>
           <div>
-            <span>{escape(problem["status"])}</span>
-            <p>{escape(problem["latest"]["text"])}</p>
+            <span>{escape(public_watch_status)}</span>
+            <p>{escape(public_watch_text)}</p>
           </div>
         </div>
       </div>
@@ -2409,6 +2699,7 @@ def _render_admin_page(data: dict, token: str) -> str:
     {_render_admin_command_brief(data)}
     {_render_site_visual(data)}
     {_render_cockpit_cards(data)}
+    {_render_problem_board(data, token_q)}
 
     <section class="metrics" aria-label="Key metrics">
       {_render_metric("Today Messages", metrics["today_messages"], "LINE entries dated today", "#b91c1c")}
@@ -2416,7 +2707,7 @@ def _render_admin_page(data: dict, token: str) -> str:
       {_render_metric("Active Users", metrics["active_users"], "Unique LINE user ids", "#7f1d1d")}
       {_render_metric("Photos", metrics["photos_30d"], "Stored progress images", "#dc2626")}
       {_render_metric("Workers 7D", metrics["worker_total_7d"], "Sum from daily reports", "#facc15")}
-      {_render_metric("Activity Types", metrics["activity_types"], "Detected work categories", "#18110f")}
+      {_render_metric("Open Issues", metrics["open_issues"], "Problem board items", "#18110f")}
     </section>
 
     <section class="dashboard-grid">
@@ -2488,6 +2779,30 @@ def _render_admin_page(data: dict, token: str) -> str:
     return html
 
 
+def _admin_redirect(token: str) -> RedirectResponse:
+    return RedirectResponse(url=f"/admin?token={quote(token, safe='')}", status_code=303)
+
+
+def _clean_form_text(value: str | None) -> str | None:
+    text = " ".join(str(value or "").split())
+    return text or None
+
+
+def _clean_form_date(value: str | None) -> str | None:
+    parsed = _parse_date(value)
+    return parsed.isoformat() if parsed else None
+
+
+def _clean_status(value: str | None) -> str:
+    value = str(value or "open").strip().lower()
+    return value if value in {"open", "in_progress", "waiting", "resolved", "closed"} else "open"
+
+
+def _clean_impact(value: str | None) -> str:
+    value = str(value or "medium").strip().lower()
+    return value if value in {"low", "medium", "high", "critical"} else "medium"
+
+
 @public_router.get("/project", response_class=HTMLResponse)
 async def public_project_home():
     return HTMLResponse(_render_public_page(_collect_dashboard()))
@@ -2496,6 +2811,89 @@ async def public_project_home():
 @public_router.get("/project/api")
 async def public_project_api():
     return JSONResponse(_public_api_payload(_collect_dashboard()))
+
+
+@router.post("/issues/create")
+async def admin_issue_create(
+    token: str = "",
+    title: str = Form(...),
+    area: str = Form(""),
+    owner: str = Form(""),
+    due_date: str = Form(""),
+    impact: str = Form("medium"),
+    next_action: str = Form(""),
+):
+    _check_token(token)
+    client, err = _get_supabase_client()
+    if client is None:
+        raise HTTPException(503, err or "Supabase is not configured.")
+    payload = {
+        "title": _clean_form_text(title),
+        "area": _clean_form_text(area),
+        "owner": _clean_form_text(owner),
+        "due_date": _clean_form_date(due_date),
+        "impact": _clean_impact(impact),
+        "next_action": _clean_form_text(next_action),
+        "status": "open",
+        "source_channel": "admin",
+        "updated_at": _now_bkk().astimezone(timezone.utc).isoformat(),
+    }
+    try:
+        client.table("project_issues").insert(payload).execute()
+    except Exception as exc:
+        raise HTTPException(500, f"Cannot create issue: {exc}")
+    return _admin_redirect(token)
+
+
+@router.post("/issues/{issue_id}/update")
+async def admin_issue_update(
+    issue_id: int,
+    token: str = "",
+    owner: str = Form(""),
+    due_date: str = Form(""),
+    status: str = Form("open"),
+    next_action: str = Form(""),
+):
+    _check_token(token)
+    client, err = _get_supabase_client()
+    if client is None:
+        raise HTTPException(503, err or "Supabase is not configured.")
+    payload = {
+        "owner": _clean_form_text(owner),
+        "due_date": _clean_form_date(due_date),
+        "status": _clean_status(status),
+        "next_action": _clean_form_text(next_action),
+        "updated_at": _now_bkk().astimezone(timezone.utc).isoformat(),
+    }
+    try:
+        client.table("project_issues").update(payload).eq("id", issue_id).execute()
+    except Exception as exc:
+        raise HTTPException(500, f"Cannot update issue: {exc}")
+    return _admin_redirect(token)
+
+
+@router.post("/issues/{issue_id}/comment")
+async def admin_issue_comment(
+    issue_id: int,
+    token: str = "",
+    comment: str = Form(...),
+):
+    _check_token(token)
+    client, err = _get_supabase_client()
+    if client is None:
+        raise HTTPException(503, err or "Supabase is not configured.")
+    text = _clean_form_text(comment)
+    if text:
+        try:
+            client.table("project_issue_comments").insert(
+                {"issue_id": issue_id, "author": "Admin", "comment": text}
+            ).execute()
+            client.table("project_issues").update(
+                {"updated_at": _now_bkk().astimezone(timezone.utc).isoformat()}
+            ).eq("id", issue_id).execute()
+        except Exception as exc:
+            raise HTTPException(500, f"Cannot save comment: {exc}")
+    return _admin_redirect(token)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -2523,6 +2921,15 @@ async def admin_api_overview(token: str = ""):
         "financial_report": data["financial_report"],
         "progress_report": data["progress_report"],
         "problem_report": data["problem_report"],
+        "issue_board": {
+            "open_count": data["issue_board"]["open_count"],
+            "total_count": data["issue_board"]["total_count"],
+            "overdue_count": data["issue_board"]["overdue_count"],
+            "due_soon_count": data["issue_board"]["due_soon_count"],
+            "by_status": data["issue_board"]["by_status"],
+            "by_impact": data["issue_board"]["by_impact"],
+            "open_issues": data["issue_board"]["open_issues"],
+        },
         "recent_photos": data["recent_photos"],
     }
     return JSONResponse(public)

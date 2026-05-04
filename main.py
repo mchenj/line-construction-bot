@@ -323,6 +323,102 @@ def parse_date_arg(arg):
     return arg if re.match(r'^\d{4}-\d{2}-\d{2}$', arg) else None
 
 
+ISSUE_LABELS = {
+    "title": ("ปัญหา", "issue", "problem", "risk"),
+    "description": ("รายละเอียด", "detail", "description"),
+    "next_action": ("การแก้ไข", "แนวทางแก้ไข", "next action", "action", "แก้ไข"),
+    "owner": ("ผู้รับผิดชอบ", "owner", "pic", "ผู้ดูแล"),
+    "due_date": ("กำหนดเสร็จ", "กำหนด", "deadline", "due date", "due"),
+    "status": ("สถานะ", "status"),
+    "area": ("พื้นที่", "หมวดงาน", "area", "zone", "location"),
+    "impact": ("ผลกระทบ", "ความรุนแรง", "impact", "severity"),
+}
+
+
+def _parse_issue_due_date(value: str | None):
+    text = (value or "").strip()
+    if not text:
+        return None
+    iso = parse_date_arg(text)
+    if iso:
+        return iso
+    thai = parse_thai_date(text)
+    if thai:
+        return thai
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2,4})$', text)
+    if not m:
+        return None
+    day = int(m.group(1))
+    month = int(m.group(2))
+    year = int(m.group(3))
+    if year < 100:
+        year += 2500
+    if year > 2400:
+        year -= 543
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def _normalize_issue_status(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if any(k in text for k in ("closed", "ปิด")):
+        return "closed"
+    if any(k in text for k in ("resolved", "done", "เสร็จ", "แก้แล้ว", "เรียบร้อย")):
+        return "resolved"
+    if any(k in text for k in ("waiting", "pending", "รอ")):
+        return "waiting"
+    if any(k in text for k in ("progress", "doing", "กำลัง", "ดำเนินการ")):
+        return "in_progress"
+    return "open"
+
+
+def _normalize_issue_impact(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if any(k in text for k in ("critical", "วิกฤต", "ร้ายแรงมาก")):
+        return "critical"
+    if any(k in text for k in ("high", "สูง", "รุนแรง", "มาก")):
+        return "high"
+    if any(k in text for k in ("low", "ต่ำ", "น้อย", "เล็กน้อย")):
+        return "low"
+    return "medium"
+
+
+def parse_issue_report(text: str) -> dict | None:
+    fields: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        matched = False
+        for field, labels in ISSUE_LABELS.items():
+            for label in labels:
+                pattern = rf'^{re.escape(label)}\s*[:：\-]\s*(.+)$'
+                m = re.match(pattern, line, flags=re.IGNORECASE)
+                if m:
+                    fields[field] = m.group(1).strip()
+                    matched = True
+                    break
+            if matched:
+                break
+
+    if not fields.get("title"):
+        return None
+
+    due_date = _parse_issue_due_date(fields.get("due_date"))
+    return {
+        "title": fields.get("title", "")[:180],
+        "description": fields.get("description") or fields.get("title"),
+        "next_action": fields.get("next_action"),
+        "owner": fields.get("owner"),
+        "due_date": due_date,
+        "status": _normalize_issue_status(fields.get("status")),
+        "area": fields.get("area"),
+        "impact": _normalize_issue_impact(fields.get("impact")),
+    }
+
+
 def verify_line_signature(body, sig):
     if not LINE_CHANNEL_SECRET: return True
     h = hmac.new(LINE_CHANNEL_SECRET.encode(), body, hashlib.sha256).digest()
@@ -469,6 +565,44 @@ def save_activities(work_date, source_id, activities, raw_text, seq_offset=0):
         return True
     except Exception as e:
         print(f"❌ save_act: {e}"); return False
+
+
+def save_project_issue(work_date: str, source_id: int | None, issue: dict | None, user_id: str = ""):
+    if not supabase or not work_date or not issue:
+        return None
+    payload = {
+        "work_date": work_date,
+        "source_id": source_id,
+        "title": issue.get("title"),
+        "description": issue.get("description"),
+        "area": issue.get("area"),
+        "owner": issue.get("owner"),
+        "due_date": issue.get("due_date"),
+        "status": issue.get("status") or "open",
+        "impact": issue.get("impact") or "medium",
+        "next_action": issue.get("next_action"),
+        "reported_by": user_id,
+        "source_channel": "line",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        existing = (
+            supabase.table("project_issues")
+            .select("id")
+            .eq("work_date", work_date)
+            .eq("title", issue.get("title"))
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            issue_id = existing.data[0].get("id")
+            supabase.table("project_issues").update(payload).eq("id", issue_id).execute()
+            return issue_id
+        result = supabase.table("project_issues").insert(payload).execute()
+        return result.data[0].get("id") if result.data else None
+    except Exception as e:
+        print(f"❌ save_project_issue: {e}")
+        return None
 
 
 def save_image_record(work_date, source_id, image_url, caption=""):
@@ -1066,6 +1200,8 @@ async def webhook(request: Request):
             # ถ้า /add active → ต่อท้ายข้อเดิม (ไม่แทรกหน้า)
             seq_offset = get_max_activity_seq(work_date) if add_target else 0
             save_activities(work_date, source_id, parsed["activities"], text, seq_offset=seq_offset)
+            issue = parse_issue_report(text)
+            issue_id = save_project_issue(work_date, source_id, issue, user_id)
             last_text_by_user[user_id] = {
                 "text":text,"work_date":work_date,
                 "timestamp":datetime.now(timezone.utc),"source_id":source_id,
@@ -1082,11 +1218,14 @@ async def webhook(request: Request):
             if equipment:
                 eq_str = ", ".join(f"{e['name']} {e['qty']} {e['unit']}" for e in equipment[:4])
                 equip_str = f"\n🚜 เครื่องจักร: {eq_str}"
+            issue_str = ""
+            if issue and issue_id:
+                issue_str = f"\n⚠️ Problem Board: #{issue_id} {issue['title'][:60]}"
 
             await reply_to_line(reply_token,(
                 f"✅ บันทึกรายงานเรียบร้อย\n━━━━━━━━━━━━━━━\n"
                 f"📅 วันที่: {work_date}\n☁️ อากาศ: {parsed['weather'] or 'ไม่ระบุ'}\n"
-                f"🔨 งาน: {acts_str}{labor_str}{equip_str}\n"
+                f"🔨 งาน: {acts_str}{labor_str}{equip_str}{issue_str}\n"
                 f"━━━━━━━━━━━━━━━\n📸 ส่งรูปต่อได้เลย"
             ))
 
