@@ -227,6 +227,8 @@ def add_signature_table(doc, left="ผู้รายงาน (Reported by)", r
 # ════════════════════════════════════════
 
 TEMPLATE_DAILY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template_daily.docx")
+SIGNATURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "templates_weekly", "signature.jpeg")
 
 # โครงสร้าง paragraph ใน template_daily.docx:
 #  [1]  วันที่ {day} เดือน {month} พ.ศ.{year}   → run[2]=day, run[6]=month+year
@@ -359,6 +361,111 @@ def _tpl_rebuild_para(para, new_text):
     """ล้าง runs ทั้งหมด ใส่ new_text ใน run แรก"""
     for i, run in enumerate(para.runs):
         run.text = new_text if i == 0 else ""
+
+
+def _add_signature_behind_text(doc, signature_path: str = None) -> bool:
+    """แทรกลายเซ็นเป็นรูป "ข้างหลังข้อความ" บริเวณ "ลงชื่อ......" ของรายงานประจำวัน
+    Position: H 9.21cm จากซ้าย column, V 0.065cm จาก paragraph (ตามตัวอย่าง)
+    Size: 4.66cm × 1.55cm
+    """
+    sig_path = signature_path or SIGNATURE_PATH
+    if not os.path.exists(sig_path):
+        return False
+
+    # 1) หา paragraph ที่มี "ลงชื่อ" และ paragraph ก่อนหน้า (ที่ว่างไว้ใส่ลายเซ็น)
+    sig_target = None
+    for p in doc.paragraphs:
+        if "ลงชื่อ" in p.text:
+            sig_target = p
+            break
+    if sig_target is None:
+        return False
+
+    # 2) ใช้ previous paragraph (ที่ template ทิ้งว่างไว้สำหรับลายเซ็น)
+    #    ถ้าไม่มี ก็สร้าง paragraph ว่างใหม่ก่อน "ลงชื่อ"
+    prev_elem = sig_target._p.getprevious()
+    target_p_elem = None
+    NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    if prev_elem is not None and prev_elem.tag == f"{{{NS_W}}}p":
+        # ตรวจว่า paragraph ก่อนหน้าเป็น empty หรือไม่
+        texts = prev_elem.findall(f".//{{{NS_W}}}t")
+        has_text = any((t.text or "").strip() for t in texts)
+        if not has_text:
+            target_p_elem = prev_elem
+    if target_p_elem is None:
+        target_p_elem = OxmlElement("w:p")
+        sig_target._p.addprevious(target_p_elem)
+
+    # 3) Wrap target_p_elem เป็น Paragraph object เพื่อใช้ add_run().add_picture()
+    from docx.text.paragraph import Paragraph
+    from docx.shared import Cm, Emu
+    target_para = Paragraph(target_p_elem, sig_target._parent)
+    run = target_para.add_run()
+    try:
+        run.add_picture(sig_path, width=Cm(4.66), height=Cm(1.55))
+    except Exception as e:
+        print(f"⚠️ add_picture failed: {e}")
+        return False
+
+    # 4) แปลง <wp:inline> → <wp:anchor> (behindDoc=1, positioned)
+    NS_WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    drawing = run._r.find(f".//{{{NS_W}}}drawing")
+    if drawing is None:
+        return True  # picture แทรกแล้ว แต่ไม่สามารถแปลงเป็น anchor
+    inline = drawing.find(f"{{{NS_WP}}}inline")
+    if inline is None:
+        return True
+
+    # extract child elements ที่ต้องเก็บ
+    extent      = inline.find(f"{{{NS_WP}}}extent")
+    docPr       = inline.find(f"{{{NS_WP}}}docPr")
+    cNvFramePr  = inline.find(f"{{{NS_WP}}}cNvGraphicFramePr")
+    graphic     = inline.find(f"{{{NS_WP}}}graphic") or inline.find(
+                  ".//{http://schemas.openxmlformats.org/drawingml/2006/main}graphic")
+
+    # build anchor
+    anchor = OxmlElement("wp:anchor")
+    anchor.set("distT", "0"); anchor.set("distB", "0")
+    anchor.set("distL", "114300"); anchor.set("distR", "114300")
+    anchor.set("simplePos", "0")
+    anchor.set("relativeHeight", "251660288")
+    anchor.set("behindDoc", "1")        # ★ ข้างหลังข้อความ
+    anchor.set("locked", "0")
+    anchor.set("layoutInCell", "1")
+    anchor.set("allowOverlap", "1")
+
+    sp = OxmlElement("wp:simplePos"); sp.set("x", "0"); sp.set("y", "0")
+    anchor.append(sp)
+
+    pH = OxmlElement("wp:positionH"); pH.set("relativeFrom", "column")
+    pHo = OxmlElement("wp:posOffset"); pHo.text = "3314700"   # 9.21cm
+    pH.append(pHo); anchor.append(pH)
+
+    pV = OxmlElement("wp:positionV"); pV.set("relativeFrom", "paragraph")
+    pVo = OxmlElement("wp:posOffset"); pVo.text = "23405"     # 0.065cm
+    pV.append(pVo); anchor.append(pV)
+
+    if extent is not None:
+        anchor.append(deepcopy(extent))
+
+    eff = OxmlElement("wp:effectExtent")
+    for k in ("l","t","r","b"): eff.set(k, "0")
+    anchor.append(eff)
+
+    wn = OxmlElement("wp:wrapNone")
+    anchor.append(wn)
+
+    if docPr is not None:
+        anchor.append(deepcopy(docPr))
+    if cNvFramePr is not None:
+        anchor.append(deepcopy(cNvFramePr))
+    if graphic is not None:
+        anchor.append(deepcopy(graphic))
+
+    # swap inline → anchor
+    drawing.remove(inline)
+    drawing.append(anchor)
+    return True
 
 
 def _tpl_delete_para(para):
@@ -525,6 +632,12 @@ async def generate_daily(work_date: str, daily_data: dict, project_name: str = "
                 p.add_run().add_picture(io.BytesIO(img_bytes), width=Inches(5.5))
             add_image_caption(doc, caption)
             doc.add_paragraph()
+
+    # 7. ลายเซ็น — แทรกรูปลายเซ็น "ข้างหลังข้อความ" บน "ลงชื่อ......"
+    try:
+        _add_signature_behind_text(doc)
+    except Exception as e:
+        print(f"⚠️ signature insert failed: {e}")
 
     buf = io.BytesIO()
     doc.save(buf)
