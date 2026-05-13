@@ -902,8 +902,13 @@ def _help_text():
         "  /weekly2pdf 23-25/04\n"
         "\n"
         "🔹 รายงานประจำเดือน:\n"
-        "  /monthly           → เดือนนี้\n"
+        "  /monthly           → สรุปเดือน (ไฟล์เดียว)\n"
         "  /monthly 2026-04   → เม.ย. 2026\n"
+        "\n"
+        "🔹 รวม daily ทั้งเดือน 🌟\n"
+        "  /monthlyall        → รวม daily เดือนนี้ (docx เดียว)\n"
+        "  /monthlyall 2026-04\n"
+        "  /monthlyallpdf 2026-04 → PDF\n"
         "\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "\n"
@@ -1123,6 +1128,39 @@ async def handle_command(cmd, reply_token, user_id):
             if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในเดือนนี้"); return
             fb = await generate_monthly(ms, dl, PROJECT_NAME)
             fn = f"Monthly_Report_{ms}.docx"
+        elif command in ("/monthlyall", "/monthlyallpdf"):
+            ms = arg or date.today().strftime("%Y-%m")
+            if not re.match(r'^\d{4}-\d{2}$', ms):
+                await reply_to_line(reply_token,
+                    "❌ รูปแบบ: /monthlyall 2026-04"); return
+            dl = get_month_daily_list(ms)
+            if not dl: await reply_to_line(reply_token,"❌ ไม่พบข้อมูลในเดือนนี้"); return
+            from weekly_phase1 import _merge_daily_docx_files
+            daily_bytes = []
+            for daily in dl:
+                try:
+                    wd = daily.get("work_date")
+                    fb = await generate_daily(wd, daily, PROJECT_NAME, include_images=False)
+                    daily_bytes.append(fb)
+                except Exception as e:
+                    print(f"⚠️ skip {daily.get('work_date')}: {e}")
+            if not daily_bytes:
+                await reply_to_line(reply_token,"❌ สร้าง daily ไม่สำเร็จสักวัน"); return
+            merged_docx = _merge_daily_docx_files(daily_bytes)
+            if command == "/monthlyall":
+                fb = merged_docx
+                fn = f"Monthly_All_Daily_{ms}.docx"
+            else:
+                if not _PDF_AVAILABLE:
+                    await reply_to_line(reply_token,"❌ PDF merger ไม่พร้อม (ต้องติดตั้ง LibreOffice + pypdf)"); return
+                import tempfile
+                from pdf_merger import docx_pptx_to_pdf
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    src = os.path.join(tmpdir, f"monthly_all_{ms}.docx")
+                    with open(src, "wb") as f: f.write(merged_docx)
+                    pdf_path = docx_pptx_to_pdf(src, tmpdir)
+                    with open(pdf_path, "rb") as f: fb = f.read()
+                fn = f"Monthly_All_Daily_{ms}.pdf"
         else:
             await reply_to_line(reply_token, _help_text()); return
         await push_file_to_line(user_id, fn, fb)
