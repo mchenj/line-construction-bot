@@ -365,15 +365,14 @@ def _tpl_rebuild_para(para, new_text):
 
 def _add_signature_behind_text(doc, signature_path: str = None) -> bool:
     """แทรกลายเซ็นเป็นรูป "ข้างหลังข้อความ" บริเวณ "ลงชื่อ......" ของรายงานประจำวัน
-    Anchor: ผูกกับ paragraph เดียวกับบรรทัด "ลงชื่อ" เพื่อให้ขยับตามกัน
-    Position: H 8.38cm จากซ้าย column, V -0.50cm จาก paragraph
-    Size: 6.18cm × 2.06cm
+    Position: H 9.21cm จากซ้าย column, V 0.065cm จาก paragraph (ตามตัวอย่าง)
+    Size: 4.66cm × 1.55cm
     """
     sig_path = signature_path or SIGNATURE_PATH
     if not os.path.exists(sig_path):
         return False
 
-    # 1) หา paragraph ที่มี "ลงชื่อ"
+    # 1) หา paragraph ที่มี "ลงชื่อ" และ paragraph ก่อนหน้า (ที่ว่างไว้ใส่ลายเซ็น)
     sig_target = None
     for p in doc.paragraphs:
         if "ลงชื่อ" in p.text:
@@ -382,11 +381,26 @@ def _add_signature_behind_text(doc, signature_path: str = None) -> bool:
     if sig_target is None:
         return False
 
+    # 2) ใช้ previous paragraph (ที่ template ทิ้งว่างไว้สำหรับลายเซ็น)
+    #    ถ้าไม่มี ก็สร้าง paragraph ว่างใหม่ก่อน "ลงชื่อ"
+    prev_elem = sig_target._p.getprevious()
+    target_p_elem = None
     NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    if prev_elem is not None and prev_elem.tag == f"{{{NS_W}}}p":
+        # ตรวจว่า paragraph ก่อนหน้าเป็น empty หรือไม่
+        texts = prev_elem.findall(f".//{{{NS_W}}}t")
+        has_text = any((t.text or "").strip() for t in texts)
+        if not has_text:
+            target_p_elem = prev_elem
+    if target_p_elem is None:
+        target_p_elem = OxmlElement("w:p")
+        sig_target._p.addprevious(target_p_elem)
 
-    # 2) ใส่รูปใน paragraph เดียวกับบรรทัดลงชื่อ เพื่อ lock ตำแหน่งแนวตั้งกับข้อความ
-    from docx.shared import Cm
-    run = sig_target.add_run()
+    # 3) Wrap target_p_elem เป็น Paragraph object เพื่อใช้ add_run().add_picture()
+    from docx.text.paragraph import Paragraph
+    from docx.shared import Cm, Emu
+    target_para = Paragraph(target_p_elem, sig_target._parent)
+    run = target_para.add_run()
     try:
         run.add_picture(sig_path, width=Cm(6.18), height=Cm(2.06))
     except Exception as e:
@@ -416,7 +430,7 @@ def _add_signature_behind_text(doc, signature_path: str = None) -> bool:
     anchor.set("simplePos", "0")
     anchor.set("relativeHeight", "251660288")
     anchor.set("behindDoc", "1")        # ★ ข้างหลังข้อความ
-    anchor.set("locked", "1")
+    anchor.set("locked", "0")
     anchor.set("layoutInCell", "1")
     anchor.set("allowOverlap", "1")
 
@@ -428,7 +442,7 @@ def _add_signature_behind_text(doc, signature_path: str = None) -> bool:
     pH.append(pHo); anchor.append(pH)
 
     pV = OxmlElement("wp:positionV"); pV.set("relativeFrom", "paragraph")
-    pVo = OxmlElement("wp:posOffset"); pVo.text = "-180000"   # -0.50cm
+    pVo = OxmlElement("wp:posOffset"); pVo.text = "122400"    # 0.34cm
     pV.append(pVo); anchor.append(pV)
 
     if extent is not None:
