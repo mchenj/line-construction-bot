@@ -402,7 +402,7 @@ def _add_signature_behind_text(doc, signature_path: str = None) -> bool:
     target_para = Paragraph(target_p_elem, sig_target._parent)
     run = target_para.add_run()
     try:
-        run.add_picture(sig_path, width=Cm(6.18), height=Cm(2.06))
+        run.add_picture(sig_path, width=Cm(4.66), height=Cm(1.55))
     except Exception as e:
         print(f"⚠️ add_picture failed: {e}")
         return False
@@ -438,11 +438,11 @@ def _add_signature_behind_text(doc, signature_path: str = None) -> bool:
     anchor.append(sp)
 
     pH = OxmlElement("wp:positionH"); pH.set("relativeFrom", "column")
-    pHo = OxmlElement("wp:posOffset"); pHo.text = "3016800"   # 8.38cm
+    pHo = OxmlElement("wp:posOffset"); pHo.text = "3314700"   # 9.21cm
     pH.append(pHo); anchor.append(pH)
 
     pV = OxmlElement("wp:positionV"); pV.set("relativeFrom", "paragraph")
-    pVo = OxmlElement("wp:posOffset"); pVo.text = "122400"    # 0.34cm
+    pVo = OxmlElement("wp:posOffset"); pVo.text = "23405"     # 0.065cm
     pV.append(pVo); anchor.append(pV)
 
     if extent is not None:
